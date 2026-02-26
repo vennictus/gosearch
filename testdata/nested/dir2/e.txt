@@ -1,0 +1,2 @@
+needle appears in first line
+another line

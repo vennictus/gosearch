@@ -1,0 +1,4 @@
+needle first
+needle second
+other line
+ending with needle

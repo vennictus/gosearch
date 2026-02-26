@@ -1,0 +1,9 @@
+# Build artifacts
+/gosearch
+/gosearch.exe
+*.exe
+*.test
+*.out
+
+# Coverage output
+coverage.out
