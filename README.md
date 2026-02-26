@@ -9,20 +9,49 @@ Developers often need to search large directory trees quickly. This project demo
 ## Usage
 
 ```bash
-gosearch <pattern> <path>
+gosearch [flags] <pattern> <path>
 ```
 
 Example:
 
 ```bash
-gosearch needle ./testdata/small
+gosearch -i -w -workers 4 needle ./testdata/small
 ```
 
-Output format:
+### Flags
+
+- `-i` case-insensitive matching
+- `-n` show line numbers (default `true`, disable with `-n=false`)
+- `-w` whole-word matching
+- `-workers N` worker pool size
+- `-max-size` max file size (bytes or `KB`/`MB`/`GB` suffix)
+- `-extensions .go,.txt` include-only file extensions
+- `-exclude-dir vendor,node_modules` directory names to skip
+- `-count` print only total match count
+- `-quiet` suppress output and rely on exit code only
+- `-color` ANSI highlight matches in plain output
+- `-abs` print absolute file paths
+- `-format plain|json` output mode switch
+
+### Output format
+
+Plain mode (`-format plain`, default):
 
 ```text
 path/to/file:line_number: line_text
 ```
+
+JSON mode (`-format json`):
+
+```json
+{"path":"...","line":12,"text":"..."}
+```
+
+### Exit codes
+
+- `0` one or more matches found
+- `1` no matches found
+- `2` invalid usage or fatal setup/runtime error
 
 ## Architecture
 
@@ -65,14 +94,12 @@ The suite includes:
 - End-to-end CLI execution through `os/exec`
 - Concurrency safety loop
 - SIGINT cancellation behavior (skipped on Windows)
+- Stage-1 flag behavior tests (`-i`, `-w`, `-count`, `-quiet`, `-format`)
 
 ## Known Limitations
 
 - No regex support
-- No flags/options
-- No `.gitignore` support
 - No output ordering guarantees
-- No colorized output
 - No Windows-native signal semantics for cancellation test
 
 ## Why Go
@@ -82,7 +109,5 @@ Go provides simple primitives for concurrency (goroutines, channels, context), s
 ## Future Work (Not Implemented)
 
 - Regex support
-- Flags
 - `.gitignore` integration
-- Colored output
 - Performance benchmarking
