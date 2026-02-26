@@ -32,6 +32,15 @@ gosearch -i -w -workers 4 needle ./testdata/small
 - `-color` ANSI highlight matches in plain output
 - `-abs` print absolute file paths
 - `-format plain|json` output mode switch
+- `-regex` treat pattern as regex
+- `-follow-symlinks` follow symlinked files/directories
+- `-max-depth` traversal depth limit (`-1` for unlimited)
+- `-dynamic-workers` enable dynamic CPU worker scaling
+- `-io-workers` number of IO workers (`0` auto)
+- `-cpu-workers` number of CPU workers (`0` auto)
+- `-max-workers` dynamic mode CPU worker cap (`0` auto)
+- `-backpressure` buffered channel size (`0` auto)
+- `-metrics` print worker lifecycle and throughput metrics
 
 ### Output format
 
@@ -53,6 +62,23 @@ JSON mode (`-format json`):
 - `1` no matches found
 - `2` invalid usage or fatal setup/runtime error
 
+## Ignore & Symlink Semantics
+
+- `.gitignore` and `.gosearchignore` are parsed during traversal.
+- Ignore rules are evaluated per directory and inherited by child directories.
+- Nested ignore files can override parent rules using negation patterns (`!pattern`).
+- Default ignored directories include `.git`, `vendor`, and `node_modules`.
+- Ignore pruning happens before file enqueue; ignored paths are never scanned by workers.
+- Symlinks are skipped by default.
+- Enable symlink following with `-follow-symlinks`.
+- Symlink directory loops are prevented using resolved-path tracking.
+
+## Performance Notes
+
+- Regex mode has higher CPU cost than plain substring mode.
+- Ignore-rule parsing adds traversal overhead, especially on deeply nested trees with many ignore files.
+- Dynamic worker scaling improves throughput under bursty loads but may increase scheduling overhead.
+
 ## Architecture
 
 Execution flow:
@@ -61,17 +87,27 @@ Execution flow:
 2. Create cancellable context with SIGINT handling
 3. Start worker pool (`runtime.NumCPU()` workers)
 4. Start a single printer goroutine
-5. Walk filesystem with `filepath.WalkDir` and send file paths to workers
-6. Workers scan files line-by-line and emit matches
-7. Printer streams results as they arrive
+5. Traverse filesystem with ignore-rule pruning and depth/symlink controls
+6. IO workers read files and emit line jobs
+7. CPU workers apply match strategy and emit results
+8. Printer streams results as they arrive
 
 ## Concurrency Model
 
-- Fixed-size worker pool (`runtime.NumCPU()`)
-- `jobs` channel carries file paths
-- `results` channel carries match records
+- Split pipeline: traversal → file jobs → IO workers → line jobs → CPU workers → results → single printer
+- Match strategy is precompiled once and shared safely across CPU workers
+- Dynamic CPU scaling available (`-dynamic-workers` + `-max-workers`)
+- Backpressure is tunable via buffered channels (`-backpressure`)
 - One printer goroutine serializes output to avoid interleaving
 - Cancellation propagates through context to walker and workers
+
+## Stage-1 Contract Stability
+
+Stage-2 features are additive and preserve Stage-1 behavior:
+
+- Output ordering remains non-deterministic under concurrency.
+- `plain`, `json`, `count`, and `quiet` modes keep the same semantics.
+- Exit codes remain `0` (match found), `1` (no matches), `2` (usage/fatal setup/runtime).
 
 ## Testing
 
@@ -98,8 +134,7 @@ The suite includes:
 
 ## Known Limitations
 
-- No regex support
-- No output ordering guarantees
+- No output ordering guarantees (concurrent streaming)
 - No Windows-native signal semantics for cancellation test
 
 ## Why Go
@@ -108,6 +143,4 @@ Go provides simple primitives for concurrency (goroutines, channels, context), s
 
 ## Future Work (Not Implemented)
 
-- Regex support
-- `.gitignore` integration
 - Performance benchmarking

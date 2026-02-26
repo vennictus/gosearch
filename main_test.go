@@ -335,6 +335,317 @@ func TestColorHighlightOutput(t *testing.T) {
 	}
 }
 
+func TestRegexMode(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	exitCode := run([]string{"-regex", "needle\\s+first", filepath.Join("testdata", "small")}, &stdout, &stderr)
+	if exitCode != 0 {
+		t.Fatalf("expected regex match, got exit %d, stderr: %s", exitCode, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "needle first") {
+		t.Fatalf("expected regex-matched output, got: %s", stdout.String())
+	}
+}
+
+func TestRegexModeNoMatch(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	exitCode := run([]string{"-regex", "nomatch\\d+", filepath.Join("testdata", "small")}, &stdout, &stderr)
+	if exitCode != 1 {
+		t.Fatalf("expected no-match exit code 1, got %d (stderr: %s)", exitCode, stderr.String())
+	}
+}
+
+func TestRegexAndSubstringParityForEquivalentPattern(t *testing.T) {
+	var substringOut bytes.Buffer
+	var substringErr bytes.Buffer
+	subExit := run([]string{"needle", filepath.Join("testdata", "small")}, &substringOut, &substringErr)
+	if subExit != 0 {
+		t.Fatalf("substring run failed with exit %d, stderr: %s", subExit, substringErr.String())
+	}
+
+	var regexOut bytes.Buffer
+	var regexErr bytes.Buffer
+	rexExit := run([]string{"-regex", "needle", filepath.Join("testdata", "small")}, &regexOut, &regexErr)
+	if rexExit != 0 {
+		t.Fatalf("regex run failed with exit %d, stderr: %s", rexExit, regexErr.String())
+	}
+
+	countLines := func(text string) int {
+		trimmed := strings.TrimSpace(text)
+		if trimmed == "" {
+			return 0
+		}
+		return len(strings.Split(trimmed, "\n"))
+	}
+
+	if countLines(substringOut.String()) != countLines(regexOut.String()) {
+		t.Fatalf("expected equivalent match counts, substring=%d regex=%d", countLines(substringOut.String()), countLines(regexOut.String()))
+	}
+}
+
+func TestGitignoreSupport(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte("ignored.txt\n"), 0o644); err != nil {
+		t.Fatalf("failed to write .gitignore: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "ignored.txt"), []byte("needle hidden\n"), 0o644); err != nil {
+		t.Fatalf("failed to write ignored file: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "visible.txt"), []byte("needle visible\n"), 0o644); err != nil {
+		t.Fatalf("failed to write visible file: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	exitCode := run([]string{"needle", root}, &stdout, &stderr)
+	if exitCode != 0 {
+		t.Fatalf("expected match in visible file, got exit %d, stderr: %s", exitCode, stderr.String())
+	}
+
+	output := stdout.String()
+	if strings.Contains(output, "ignored.txt") {
+		t.Fatalf("expected ignored file to be skipped, got output: %s", output)
+	}
+	if !strings.Contains(output, "visible.txt") {
+		t.Fatalf("expected visible file in output: %s", output)
+	}
+}
+
+func TestNestedIgnorePrecedence(t *testing.T) {
+	root := t.TempDir()
+	nested := filepath.Join(root, "nested")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatalf("failed to create nested dir: %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte("nested/*.txt\n"), 0o644); err != nil {
+		t.Fatalf("failed to write root .gitignore: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(nested, ".gitignore"), []byte("!keep.txt\n"), 0o644); err != nil {
+		t.Fatalf("failed to write nested .gitignore: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(nested, "drop.txt"), []byte("needle drop\n"), 0o644); err != nil {
+		t.Fatalf("failed to write drop file: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(nested, "keep.txt"), []byte("needle keep\n"), 0o644); err != nil {
+		t.Fatalf("failed to write keep file: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	exitCode := run([]string{"needle", root}, &stdout, &stderr)
+	if exitCode != 0 {
+		t.Fatalf("expected keep.txt match, got exit %d stderr=%s", exitCode, stderr.String())
+	}
+
+	output := stdout.String()
+	if strings.Contains(output, "drop.txt") {
+		t.Fatalf("drop.txt should be ignored by parent rule, output: %s", output)
+	}
+	if !strings.Contains(output, "keep.txt") {
+		t.Fatalf("keep.txt should be restored by nested negate rule, output: %s", output)
+	}
+}
+
+func TestMaxDepth(t *testing.T) {
+	root := t.TempDir()
+	level1 := filepath.Join(root, "level1")
+	level2 := filepath.Join(level1, "level2")
+	if err := os.MkdirAll(level2, 0o755); err != nil {
+		t.Fatalf("failed to create directories: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(level1, "top.txt"), []byte("needle top\n"), 0o644); err != nil {
+		t.Fatalf("failed to write top file: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(level2, "deep.txt"), []byte("needle deep\n"), 0o644); err != nil {
+		t.Fatalf("failed to write deep file: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	exitCode := run([]string{"-max-depth", "1", "needle", root}, &stdout, &stderr)
+	if exitCode != 0 {
+		t.Fatalf("expected at least top-level match, got exit %d", exitCode)
+	}
+	if strings.Contains(stdout.String(), "deep.txt") {
+		t.Fatalf("expected deep file to be excluded by max-depth, got: %s", stdout.String())
+	}
+}
+
+func TestDynamicWorkersConfig(t *testing.T) {
+	cfg, err := parseConfig([]string{"-dynamic-workers", "-cpu-workers", "2", "-max-workers", "4", "needle", filepath.Join("testdata", "small")})
+	if err != nil {
+		t.Fatalf("parseConfig returned error: %v", err)
+	}
+	if !cfg.dynamicWorkers {
+		t.Fatalf("expected dynamic-workers to be enabled")
+	}
+	if cfg.cpuWorkers != 2 || cfg.maxWorkers != 4 {
+		t.Fatalf("unexpected worker config: cpu=%d max=%d", cfg.cpuWorkers, cfg.maxWorkers)
+	}
+}
+
+func TestFollowSymlinkFile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation typically requires elevated privileges on Windows")
+	}
+
+	root := t.TempDir()
+	realFile := filepath.Join(root, "real.txt")
+	linkFile := filepath.Join(root, "link.txt")
+	if err := os.WriteFile(realFile, []byte("needle in symlink target\n"), 0o644); err != nil {
+		t.Fatalf("failed to write real file: %v", err)
+	}
+	if err := os.Symlink(realFile, linkFile); err != nil {
+		t.Fatalf("failed to create symlink: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	exitCode := run([]string{"needle", root}, &stdout, &stderr)
+	if exitCode != 0 {
+		t.Fatalf("expected match from real file, got %d", exitCode)
+	}
+	withoutFollow := stdout.String()
+
+	stdout.Reset()
+	stderr.Reset()
+	exitCode = run([]string{"-follow-symlinks", "needle", root}, &stdout, &stderr)
+	if exitCode != 0 {
+		t.Fatalf("expected matches with symlink following, got %d", exitCode)
+	}
+	withFollow := stdout.String()
+
+	if strings.Count(withFollow, "needle in symlink target") <= strings.Count(withoutFollow, "needle in symlink target") {
+		t.Fatalf("expected more matches when following symlinks; without=%q with=%q", withoutFollow, withFollow)
+	}
+}
+
+func TestSymlinkLoopDoesNotHang(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation typically requires elevated privileges on Windows")
+	}
+
+	root := t.TempDir()
+	realDir := filepath.Join(root, "real")
+	if err := os.MkdirAll(realDir, 0o755); err != nil {
+		t.Fatalf("failed to create real dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(realDir, "a.txt"), []byte("needle once\n"), 0o644); err != nil {
+		t.Fatalf("failed to write file: %v", err)
+	}
+	loopLink := filepath.Join(realDir, "loop")
+	if err := os.Symlink(realDir, loopLink); err != nil {
+		t.Fatalf("failed to create looping symlink: %v", err)
+	}
+
+	bin := buildBinary(t)
+	cmd := exec.Command(bin, "-follow-symlinks", "needle", root)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	done := make(chan error, 1)
+	go func() { done <- cmd.Run() }()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("command failed: %v stderr=%s", err, stderr.String())
+		}
+	case <-time.After(3 * time.Second):
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+		t.Fatal("symlink loop traversal appears to hang")
+	}
+}
+
+func TestDanglingSymlinkIsHandled(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation typically requires elevated privileges on Windows")
+	}
+
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "ok.txt"), []byte("needle ok\n"), 0o644); err != nil {
+		t.Fatalf("failed to write ok file: %v", err)
+	}
+	dangling := filepath.Join(root, "dangling.txt")
+	if err := os.Symlink(filepath.Join(root, "missing.txt"), dangling); err != nil {
+		t.Fatalf("failed to create dangling symlink: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	exitCode := run([]string{"-follow-symlinks", "needle", root}, &stdout, &stderr)
+	if exitCode != 0 {
+		t.Fatalf("expected successful run despite dangling symlink, got %d stderr=%s", exitCode, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "ok.txt") {
+		t.Fatalf("expected regular file match in output: %s", stdout.String())
+	}
+}
+
+func TestCancellationWithIgnoreAndRegex(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("signal behavior for os.Interrupt differs on Windows")
+	}
+
+	root := createLargeTestDir(t)
+	if err := os.WriteFile(filepath.Join(root, ".gitignore"), []byte("large_a.txt\nlarge_b.txt\n"), 0o644); err != nil {
+		t.Fatalf("failed to write .gitignore: %v", err)
+	}
+
+	bin := buildBinary(t)
+	cmd := exec.Command(bin, "-regex", "needle.*not", "-follow-symlinks", "needle", root)
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("failed to start command: %v", err)
+	}
+
+	time.Sleep(150 * time.Millisecond)
+	if err := cmd.Process.Signal(os.Interrupt); err != nil {
+		t.Fatalf("failed to send interrupt: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("expected clean cancellation exit, got %v stderr=%s", err, stderr.String())
+		}
+	case <-time.After(5 * time.Second):
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+		}
+		t.Fatal("process did not exit after interrupt")
+	}
+}
+
+func TestMetricsOutputIncludesWorkerState(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	exitCode := run([]string{"-metrics", "needle", filepath.Join("testdata", "small")}, &stdout, &stderr)
+	if exitCode != 0 {
+		t.Fatalf("expected successful run, got %d", exitCode)
+	}
+	metricsText := stderr.String()
+	if !strings.Contains(metricsText, "active=") || !strings.Contains(metricsText, "idle=") {
+		t.Fatalf("expected active/idle metrics output, got: %s", metricsText)
+	}
+}
+
 func TestJSONOutputFormat(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer

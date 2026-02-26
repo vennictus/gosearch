@@ -8,14 +8,17 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"os/signal"
+	"path"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 )
 
 type Result struct {
@@ -45,6 +48,19 @@ type Config struct {
 	color           bool
 	absPath         bool
 	outputFormat    string
+
+	regex          bool
+	followSymlinks bool
+	maxDepth       int
+
+	dynamicWorkers bool
+	ioWorkers      int
+	cpuWorkers     int
+	maxWorkers     int
+	backpressure   int
+	metrics        bool
+
+	defaultIgnoreDirs map[string]struct{}
 }
 
 type PrintSummary struct {
@@ -58,10 +74,49 @@ type Matcher struct {
 	wholeWord   bool
 }
 
+type MatchStrategy interface {
+	FindRanges(line string) []MatchRange
+}
+
+type RegexStrategy struct {
+	expression *regexp.Regexp
+}
+
 type jsonResult struct {
 	Path string `json:"path"`
 	Line *int   `json:"line,omitempty"`
 	Text string `json:"text"`
+}
+
+type lineItem struct {
+	Path string
+	Line int
+	Text string
+}
+
+type workerMetrics struct {
+	ioWorkersStarted  atomic.Int64
+	ioWorkersStopped  atomic.Int64
+	cpuWorkersStarted atomic.Int64
+	cpuWorkersStopped atomic.Int64
+	ioActiveWorkers   atomic.Int64
+	cpuActiveWorkers  atomic.Int64
+	ioMaxActive       atomic.Int64
+	cpuMaxActive      atomic.Int64
+	filesEnqueued     atomic.Int64
+	filesScanned      atomic.Int64
+	linesEnqueued     atomic.Int64
+	linesProcessed    atomic.Int64
+	matchesProduced   atomic.Int64
+	scaleUps          atomic.Int64
+}
+
+type ignoreRule struct {
+	baseDir string
+	pattern string
+	negate  bool
+	dirOnly bool
+	hasPath bool
 }
 
 const usageText = "Usage: gosearch [flags] <pattern> <path>"
@@ -79,26 +134,60 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 2
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stop()
-
-	jobs := make(chan string)
-	results := make(chan Result)
-	matcher := newMatcher(cfg.pattern, cfg.ignoreCase, cfg.wholeWord)
-
-	var workers sync.WaitGroup
-	for i := 0; i < cfg.workers; i++ {
-		workers.Add(1)
-		go worker(ctx, matcher, cfg.maxSizeBytes, jobs, results, stderr, &workers)
+	strategy, err := buildStrategy(cfg)
+	if err != nil {
+		fmt.Fprintln(stderr, usageText)
+		fmt.Fprintln(stderr, err)
+		return 2
 	}
 
+	signalCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	ctx, cancel := context.WithCancel(signalCtx)
+	defer cancel()
+
+	metrics := &workerMetrics{}
+
+	pathJobs := make(chan string, cfg.backpressure)
+	lineJobs := make(chan lineItem, cfg.backpressure)
+	results := make(chan Result, cfg.backpressure)
+
 	printerDone := make(chan PrintSummary)
-	go printer(results, stdout, cfg, printerDone)
+	go printer(ctx, results, stdout, cfg, cancel, printerDone)
 
-	walkErr := walkFiles(ctx, cfg, jobs, stderr)
-	close(jobs)
+	var cpuWG sync.WaitGroup
+	startCPUWorker := func() {
+		cpuWG.Add(1)
+		go cpuWorker(ctx, strategy, lineJobs, results, &cpuWG, metrics)
+	}
 
-	workers.Wait()
+	for i := 0; i < cfg.cpuWorkers; i++ {
+		startCPUWorker()
+	}
+
+	scaleStop := make(chan struct{})
+	scaleDone := make(chan struct{})
+	if cfg.dynamicWorkers {
+		go cpuScaler(ctx, lineJobs, scaleStop, cfg, startCPUWorker, metrics, scaleDone)
+	} else {
+		close(scaleDone)
+	}
+
+	var ioWG sync.WaitGroup
+	for i := 0; i < cfg.ioWorkers; i++ {
+		ioWG.Add(1)
+		go ioWorker(ctx, cfg, pathJobs, lineJobs, stderr, &ioWG, metrics)
+	}
+
+	walkErr := walkFiles(ctx, cfg, pathJobs, stderr, metrics)
+	close(pathJobs)
+
+	ioWG.Wait()
+	close(lineJobs)
+	close(scaleStop)
+	<-scaleDone
+
+	cpuWG.Wait()
 	close(results)
 	summary := <-printerDone
 
@@ -107,10 +196,13 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		return 2
 	}
 
+	if cfg.metrics {
+		printMetrics(stderr, metrics)
+	}
+
 	if summary.MatchCount > 0 {
 		return 0
 	}
-
 	return 1
 }
 
@@ -121,7 +213,7 @@ func parseConfig(args []string) (Config, error) {
 	ignoreCase := fs.Bool("i", false, "case-insensitive search")
 	showLineNumbers := fs.Bool("n", true, "show line numbers")
 	wholeWord := fs.Bool("w", false, "whole-word matching")
-	workers := fs.Int("workers", runtime.NumCPU(), "worker count")
+	workers := fs.Int("workers", runtime.NumCPU(), "base worker count")
 	maxSize := fs.String("max-size", "", "max file size in bytes, KB, MB, or GB")
 	extensions := fs.String("extensions", "", "comma-separated extensions, e.g. .go,.txt")
 	excludeDir := fs.String("exclude-dir", "", "comma-separated directory names to skip")
@@ -130,6 +222,17 @@ func parseConfig(args []string) (Config, error) {
 	color := fs.Bool("color", false, "enable ANSI color and highlighting in plain output")
 	absPath := fs.Bool("abs", false, "print absolute paths")
 	outputFormat := fs.String("format", "plain", "output format: plain|json")
+
+	regexMode := fs.Bool("regex", false, "treat pattern as regex")
+	followSymlinks := fs.Bool("follow-symlinks", false, "follow symlinked files/directories")
+	maxDepth := fs.Int("max-depth", -1, "max traversal depth (-1 for unlimited)")
+
+	dynamicWorkers := fs.Bool("dynamic-workers", false, "dynamically scale CPU workers")
+	ioWorkers := fs.Int("io-workers", 0, "number of IO workers (0=auto)")
+	cpuWorkers := fs.Int("cpu-workers", 0, "number of CPU workers (0=auto)")
+	maxWorkers := fs.Int("max-workers", 0, "max CPU workers when dynamic scaling is enabled (0=auto)")
+	backpressure := fs.Int("backpressure", 0, "channel buffer size (0=auto)")
+	metrics := fs.Bool("metrics", false, "print worker lifecycle metrics")
 
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
@@ -155,6 +258,10 @@ func parseConfig(args []string) (Config, error) {
 		return Config{}, errors.New("workers must be at least 1")
 	}
 
+	if *maxDepth < -1 {
+		return Config{}, errors.New("max-depth must be -1 or greater")
+	}
+
 	maxSizeBytes, err := parseSize(*maxSize)
 	if err != nil {
 		return Config{}, err
@@ -165,21 +272,73 @@ func parseConfig(args []string) (Config, error) {
 		return Config{}, errors.New("format must be plain or json")
 	}
 
+	resolvedIOWorkers := *ioWorkers
+	if resolvedIOWorkers == 0 {
+		resolvedIOWorkers = maxInt(1, *workers/2)
+	}
+	if resolvedIOWorkers < 1 {
+		return Config{}, errors.New("io-workers must be at least 1")
+	}
+
+	resolvedCPUWorkers := *cpuWorkers
+	if resolvedCPUWorkers == 0 {
+		resolvedCPUWorkers = maxInt(1, *workers)
+	}
+	if resolvedCPUWorkers < 1 {
+		return Config{}, errors.New("cpu-workers must be at least 1")
+	}
+
+	resolvedMaxWorkers := *maxWorkers
+	if resolvedMaxWorkers == 0 {
+		resolvedMaxWorkers = maxInt(resolvedCPUWorkers, resolvedCPUWorkers*2)
+	}
+	if resolvedMaxWorkers < resolvedCPUWorkers {
+		return Config{}, errors.New("max-workers must be >= cpu-workers")
+	}
+
+	resolvedBackpressure := *backpressure
+	if resolvedBackpressure == 0 {
+		resolvedBackpressure = maxInt(1, (*workers)*8)
+	}
+	if resolvedBackpressure < 1 {
+		return Config{}, errors.New("backpressure must be at least 1")
+	}
+
+	excluded := parseCSVSet(*excludeDir, false)
+	defaults := map[string]struct{}{
+		".git":         {},
+		"node_modules": {},
+		"vendor":       {},
+	}
+	for item := range excluded {
+		defaults[item] = struct{}{}
+	}
+
 	cfg := Config{
-		pattern:         pattern,
-		rootPath:        rootPath,
-		ignoreCase:      *ignoreCase,
-		showLineNumbers: *showLineNumbers,
-		wholeWord:       *wholeWord,
-		workers:         *workers,
-		maxSizeBytes:    maxSizeBytes,
-		extensions:      parseCSVSet(*extensions, true),
-		excludeDirs:     parseCSVSet(*excludeDir, false),
-		countOnly:       *countOnly,
-		quiet:           *quiet,
-		color:           *color,
-		absPath:         *absPath,
-		outputFormat:    format,
+		pattern:           pattern,
+		rootPath:          rootPath,
+		ignoreCase:        *ignoreCase,
+		showLineNumbers:   *showLineNumbers,
+		wholeWord:         *wholeWord,
+		workers:           *workers,
+		maxSizeBytes:      maxSizeBytes,
+		extensions:        parseCSVSet(*extensions, true),
+		excludeDirs:       excluded,
+		countOnly:         *countOnly,
+		quiet:             *quiet,
+		color:             *color,
+		absPath:           *absPath,
+		outputFormat:      format,
+		regex:             *regexMode,
+		followSymlinks:    *followSymlinks,
+		maxDepth:          *maxDepth,
+		dynamicWorkers:    *dynamicWorkers,
+		ioWorkers:         resolvedIOWorkers,
+		cpuWorkers:        resolvedCPUWorkers,
+		maxWorkers:        resolvedMaxWorkers,
+		backpressure:      resolvedBackpressure,
+		metrics:           *metrics,
+		defaultIgnoreDirs: defaults,
 	}
 
 	return cfg, nil
@@ -212,7 +371,6 @@ func parseSize(input string) (int64, error) {
 	if err != nil || value < 0 {
 		return 0, errors.New("invalid -max-size value")
 	}
-
 	return value * multiplier, nil
 }
 
@@ -231,57 +389,416 @@ func parseCSVSet(input string, normalizeExtension bool) map[string]struct{} {
 	return result
 }
 
-func walkFiles(ctx context.Context, cfg Config, jobs chan<- string, stderr io.Writer) error {
-	return filepath.WalkDir(cfg.rootPath, func(path string, d fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			fmt.Fprintln(stderr, walkErr)
-			return nil
-		}
+func buildStrategy(cfg Config) (MatchStrategy, error) {
+	if !cfg.regex {
+		return newMatcher(cfg.pattern, cfg.ignoreCase, cfg.wholeWord), nil
+	}
 
+	pattern := cfg.pattern
+	if cfg.wholeWord {
+		pattern = "\\b(?:" + pattern + ")\\b"
+	}
+	if cfg.ignoreCase {
+		pattern = "(?i)" + pattern
+	}
+
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return nil, fmt.Errorf("invalid regex pattern: %w", err)
+	}
+	return RegexStrategy{expression: re}, nil
+}
+
+func walkFiles(ctx context.Context, cfg Config, jobs chan<- string, stderr io.Writer, metrics *workerMetrics) error {
+	visited := make(map[string]struct{})
+	rootAbs, _ := filepath.Abs(cfg.rootPath)
+	if cfg.followSymlinks {
+		if resolved, err := filepath.EvalSymlinks(rootAbs); err == nil {
+			visited[resolved] = struct{}{}
+		}
+	}
+	return walkDirectory(ctx, cfg, cfg.rootPath, 0, nil, visited, jobs, stderr, metrics)
+}
+
+func walkDirectory(
+	ctx context.Context,
+	cfg Config,
+	currentDir string,
+	depth int,
+	inheritedRules []ignoreRule,
+	visited map[string]struct{},
+	jobs chan<- string,
+	stderr io.Writer,
+	metrics *workerMetrics,
+) error {
+	if cfg.maxDepth >= 0 && depth > cfg.maxDepth {
+		return nil
+	}
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+
+	rules, err := loadIgnoreRules(currentDir, inheritedRules)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+	}
+
+	entries, err := os.ReadDir(currentDir)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return nil
+	}
+
+	for _, entry := range entries {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		default:
 		}
 
-		if d.IsDir() {
-			if path != cfg.rootPath {
-				if _, blocked := cfg.excludeDirs[strings.ToLower(d.Name())]; blocked {
-					return fs.SkipDir
-				}
-			}
-			return nil
+		fullPath := filepath.Join(currentDir, entry.Name())
+		entryType := entry.Type()
+		isSymlink := entryType&os.ModeSymlink != 0
+		isDir := entry.IsDir()
+
+		if shouldIgnorePath(cfg, rules, fullPath, isDir) {
+			continue
 		}
 
-		if d.Type()&os.ModeSymlink != 0 {
-			return nil
+		if isSymlink {
+			if !cfg.followSymlinks {
+				continue
+			}
+			targetInfo, statErr := os.Stat(fullPath)
+			if statErr != nil {
+				fmt.Fprintln(stderr, statErr)
+				continue
+			}
+			isDir = targetInfo.IsDir()
+
+			if shouldIgnorePath(cfg, rules, fullPath, isDir) {
+				continue
+			}
+		}
+
+		if isDir {
+			if _, blocked := cfg.defaultIgnoreDirs[strings.ToLower(entry.Name())]; blocked {
+				continue
+			}
+			if isSymlink {
+				resolved, resolveErr := filepath.EvalSymlinks(fullPath)
+				if resolveErr != nil {
+					fmt.Fprintln(stderr, resolveErr)
+					continue
+				}
+				if _, seen := visited[resolved]; seen {
+					continue
+				}
+				visited[resolved] = struct{}{}
+			}
+			if err := walkDirectory(ctx, cfg, fullPath, depth+1, rules, visited, jobs, stderr, metrics); err != nil {
+				if errors.Is(err, context.Canceled) {
+					return err
+				}
+			}
+			continue
 		}
 
 		if len(cfg.extensions) > 0 {
-			ext := strings.ToLower(filepath.Ext(d.Name()))
+			ext := strings.ToLower(filepath.Ext(entry.Name()))
 			if _, ok := cfg.extensions[ext]; !ok {
-				return nil
+				continue
 			}
 		}
 
 		if cfg.maxSizeBytes > 0 {
-			info, infoErr := d.Info()
+			entryInfo, infoErr := entry.Info()
 			if infoErr != nil {
 				fmt.Fprintln(stderr, infoErr)
-				return nil
+				continue
 			}
-			if info.Size() > cfg.maxSizeBytes {
-				return nil
+			if entryInfo.Size() > cfg.maxSizeBytes {
+				continue
 			}
 		}
 
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case jobs <- path:
-			return nil
+		case jobs <- fullPath:
+			metrics.filesEnqueued.Add(1)
 		}
-	})
+	}
+
+	return nil
+}
+
+func loadIgnoreRules(currentDir string, inherited []ignoreRule) ([]ignoreRule, error) {
+	rules := make([]ignoreRule, 0, len(inherited)+8)
+	rules = append(rules, inherited...)
+	for _, fileName := range []string{".gitignore", ".gosearchignore"} {
+		pathToIgnore := filepath.Join(currentDir, fileName)
+		file, err := os.Open(pathToIgnore)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return rules, fmt.Errorf("%s: %w", pathToIgnore, err)
+		}
+
+		scanner := bufio.NewScanner(file)
+		for scanner.Scan() {
+			line := strings.TrimSpace(scanner.Text())
+			if line == "" || strings.HasPrefix(line, "#") {
+				continue
+			}
+
+			negate := strings.HasPrefix(line, "!")
+			if negate {
+				line = strings.TrimSpace(strings.TrimPrefix(line, "!"))
+			}
+			if line == "" {
+				continue
+			}
+
+			dirOnly := strings.HasSuffix(line, "/")
+			line = strings.TrimSuffix(line, "/")
+			if line == "" {
+				continue
+			}
+
+			rules = append(rules, ignoreRule{
+				baseDir: currentDir,
+				pattern: line,
+				negate:  negate,
+				dirOnly: dirOnly,
+				hasPath: strings.Contains(line, "/"),
+			})
+		}
+		if err := scanner.Err(); err != nil {
+			_ = file.Close()
+			return rules, fmt.Errorf("%s: %w", pathToIgnore, err)
+		}
+		_ = file.Close()
+	}
+	return rules, nil
+}
+
+func shouldIgnorePath(cfg Config, rules []ignoreRule, fullPath string, isDir bool) bool {
+	name := strings.ToLower(filepath.Base(fullPath))
+	if isDir {
+		if _, blocked := cfg.defaultIgnoreDirs[name]; blocked {
+			return true
+		}
+	}
+
+	ignored := false
+	for _, rule := range rules {
+		if rule.dirOnly && !isDir {
+			continue
+		}
+
+		rel, err := filepath.Rel(rule.baseDir, fullPath)
+		if err != nil {
+			continue
+		}
+		relSlash := filepath.ToSlash(rel)
+		if relSlash == "." || strings.HasPrefix(relSlash, "../") {
+			continue
+		}
+
+		if ruleMatch(rule, relSlash) {
+			ignored = !rule.negate
+		}
+	}
+	return ignored
+}
+
+func ruleMatch(rule ignoreRule, relSlash string) bool {
+	patternText := strings.ReplaceAll(rule.pattern, "**", "*")
+	if rule.hasPath {
+		if globMatch(patternText, relSlash) {
+			return true
+		}
+		prefix := strings.TrimSuffix(patternText, "/") + "/"
+		return strings.HasPrefix(relSlash, prefix)
+	}
+
+	for _, segment := range strings.Split(relSlash, "/") {
+		if globMatch(patternText, segment) {
+			return true
+		}
+	}
+	return false
+}
+
+func globMatch(patternText string, value string) bool {
+	matched, err := path.Match(patternText, value)
+	if err != nil {
+		return false
+	}
+	return matched
+}
+
+func cpuScaler(
+	ctx context.Context,
+	lineJobs <-chan lineItem,
+	stop <-chan struct{},
+	cfg Config,
+	spawn func(),
+	metrics *workerMetrics,
+	done chan<- struct{},
+) {
+	defer close(done)
+	active := cfg.cpuWorkers
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-stop:
+			return
+		case <-ticker.C:
+			pending := len(lineJobs)
+			if pending > active*2 && active < cfg.maxWorkers {
+				spawn()
+				active++
+				metrics.scaleUps.Add(1)
+			}
+		}
+	}
+}
+
+func ioWorker(
+	ctx context.Context,
+	cfg Config,
+	pathJobs <-chan string,
+	lineJobs chan<- lineItem,
+	stderr io.Writer,
+	wg *sync.WaitGroup,
+	metrics *workerMetrics,
+) {
+	metrics.ioWorkersStarted.Add(1)
+	defer func() {
+		metrics.ioWorkersStopped.Add(1)
+		wg.Done()
+	}()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case filePath, ok := <-pathJobs:
+			if !ok {
+				return
+			}
+
+			metrics.ioActiveWorkers.Add(1)
+			updateMaxActive(&metrics.ioMaxActive, metrics.ioActiveWorkers.Load())
+
+			func() {
+				defer metrics.ioActiveWorkers.Add(-1)
+
+				if cfg.maxSizeBytes > 0 {
+					info, statErr := os.Stat(filePath)
+					if statErr != nil {
+						fmt.Fprintln(stderr, statErr)
+						return
+					}
+					if info.Size() > cfg.maxSizeBytes {
+						return
+					}
+				}
+
+				binary, err := isBinaryFile(filePath)
+				if err != nil {
+					fmt.Fprintln(stderr, fmt.Errorf("%s: %w", filePath, err))
+					return
+				}
+				if binary {
+					return
+				}
+
+				file, err := os.Open(filePath)
+				if err != nil {
+					fmt.Fprintln(stderr, fmt.Errorf("%s: %w", filePath, err))
+					return
+				}
+
+				scanner := bufio.NewScanner(file)
+				lineNumber := 0
+				for scanner.Scan() {
+					lineNumber++
+					lineText := scanner.Text()
+
+					select {
+					case <-ctx.Done():
+						_ = file.Close()
+						return
+					case lineJobs <- lineItem{Path: filePath, Line: lineNumber, Text: lineText}:
+						metrics.linesEnqueued.Add(1)
+					}
+				}
+
+				if err := scanner.Err(); err != nil {
+					fmt.Fprintln(stderr, fmt.Errorf("%s: %w", filePath, err))
+				}
+				_ = file.Close()
+				metrics.filesScanned.Add(1)
+			}()
+		}
+	}
+}
+
+func cpuWorker(
+	ctx context.Context,
+	strategy MatchStrategy,
+	lineJobs <-chan lineItem,
+	results chan<- Result,
+	wg *sync.WaitGroup,
+	metrics *workerMetrics,
+) {
+	metrics.cpuWorkersStarted.Add(1)
+	defer func() {
+		metrics.cpuWorkersStopped.Add(1)
+		wg.Done()
+	}()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case item, ok := <-lineJobs:
+			if !ok {
+				return
+			}
+			metrics.cpuActiveWorkers.Add(1)
+			updateMaxActive(&metrics.cpuMaxActive, metrics.cpuActiveWorkers.Load())
+
+			func() {
+				defer metrics.cpuActiveWorkers.Add(-1)
+				metrics.linesProcessed.Add(1)
+
+				ranges := strategy.FindRanges(item.Text)
+				if len(ranges) == 0 {
+					return
+				}
+
+				result := Result{Path: item.Path, Line: item.Line, Text: item.Text, Ranges: ranges}
+				select {
+				case <-ctx.Done():
+					return
+				case results <- result:
+					metrics.matchesProduced.Add(1)
+				}
+			}()
+		}
+	}
 }
 
 func newMatcher(pattern string, ignoreCase bool, wholeWord bool) Matcher {
@@ -292,33 +809,62 @@ func newMatcher(pattern string, ignoreCase bool, wholeWord bool) Matcher {
 	return matcher
 }
 
-func worker(ctx context.Context, matcher Matcher, maxSizeBytes int64, jobs <-chan string, results chan<- Result, stderr io.Writer, wg *sync.WaitGroup) {
-	defer wg.Done()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case path, ok := <-jobs:
-			if !ok {
-				return
-			}
-
-			matches, err := scanFileWithMatcher(path, matcher, maxSizeBytes)
-			if err != nil {
-				fmt.Fprintln(stderr, err)
-				continue
-			}
-
-			for _, match := range matches {
-				select {
-				case <-ctx.Done():
-					return
-				case results <- match:
-				}
-			}
-		}
+func (matcher Matcher) FindRanges(line string) []MatchRange {
+	needle := matcher.pattern
+	haystack := line
+	if matcher.ignoreCase {
+		needle = matcher.patternFold
+		haystack = strings.ToLower(line)
 	}
+
+	if needle == "" {
+		return nil
+	}
+
+	ranges := make([]MatchRange, 0)
+	searchFrom := 0
+	for {
+		index := strings.Index(haystack[searchFrom:], needle)
+		if index < 0 {
+			break
+		}
+
+		start := searchFrom + index
+		end := start + len(needle)
+		if !matcher.wholeWord || isWholeWordMatch(line, start, end) {
+			ranges = append(ranges, MatchRange{Start: start, End: end})
+			searchFrom = end
+			continue
+		}
+		searchFrom = start + 1
+	}
+
+	return ranges
+}
+
+func (strategy RegexStrategy) FindRanges(line string) []MatchRange {
+	indices := strategy.expression.FindAllStringIndex(line, -1)
+	if len(indices) == 0 {
+		return nil
+	}
+	ranges := make([]MatchRange, 0, len(indices))
+	for _, match := range indices {
+		ranges = append(ranges, MatchRange{Start: match[0], End: match[1]})
+	}
+	return ranges
+}
+
+func isWholeWordMatch(line string, start int, end int) bool {
+	leftBoundary := start == 0 || !isWordByte(line[start-1])
+	rightBoundary := end == len(line) || !isWordByte(line[end])
+	return leftBoundary && rightBoundary
+}
+
+func isWordByte(value byte) bool {
+	return (value >= 'a' && value <= 'z') ||
+		(value >= 'A' && value <= 'Z') ||
+		(value >= '0' && value <= '9') ||
+		value == '_'
 }
 
 func scanFile(path string, pattern string) ([]Result, error) {
@@ -366,55 +912,7 @@ func scanFileWithMatcher(path string, matcher Matcher, maxSizeBytes int64) ([]Re
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
-
 	return matches, nil
-}
-
-func (matcher Matcher) FindRanges(line string) []MatchRange {
-	needle := matcher.pattern
-	haystack := line
-	if matcher.ignoreCase {
-		needle = matcher.patternFold
-		haystack = strings.ToLower(line)
-	}
-
-	if needle == "" {
-		return nil
-	}
-
-	ranges := make([]MatchRange, 0)
-	searchFrom := 0
-	for {
-		index := strings.Index(haystack[searchFrom:], needle)
-		if index < 0 {
-			break
-		}
-
-		start := searchFrom + index
-		end := start + len(needle)
-		if !matcher.wholeWord || isWholeWordMatch(line, start, end) {
-			ranges = append(ranges, MatchRange{Start: start, End: end})
-			searchFrom = end
-			continue
-		}
-
-		searchFrom = start + 1
-	}
-
-	return ranges
-}
-
-func isWholeWordMatch(line string, start int, end int) bool {
-	leftBoundary := start == 0 || !isWordByte(line[start-1])
-	rightBoundary := end == len(line) || !isWordByte(line[end])
-	return leftBoundary && rightBoundary
-}
-
-func isWordByte(value byte) bool {
-	return (value >= 'a' && value <= 'z') ||
-		(value >= 'A' && value <= 'Z') ||
-		(value >= '0' && value <= '9') ||
-		value == '_'
 }
 
 func isBinaryFile(path string) (bool, error) {
@@ -435,42 +933,78 @@ func isBinaryFile(path string) (bool, error) {
 			return true, nil
 		}
 	}
-
 	return false, nil
 }
 
-func printer(results <-chan Result, stdout io.Writer, cfg Config, done chan<- PrintSummary) {
+func printer(
+	ctx context.Context,
+	results <-chan Result,
+	stdout io.Writer,
+	cfg Config,
+	cancel context.CancelFunc,
+	done chan<- PrintSummary,
+) {
 	count := 0
 	jsonEncoder := json.NewEncoder(stdout)
+	cancelledOnce := false
 
-	for result := range results {
-		count++
-		if cfg.quiet || cfg.countOnly {
-			continue
-		}
+	for {
+		select {
+		case <-ctx.Done():
+			// keep draining until channel is closed to avoid losing in-flight results.
+			for result := range results {
+				count++
+				_ = result
+			}
+			finalizePrint(count, cfg, jsonEncoder, stdout)
+			done <- PrintSummary{MatchCount: count}
+			close(done)
+			return
+		case result, ok := <-results:
+			if !ok {
+				finalizePrint(count, cfg, jsonEncoder, stdout)
+				done <- PrintSummary{MatchCount: count}
+				close(done)
+				return
+			}
 
-		path := formatPath(result.Path, cfg.absPath)
-		switch cfg.outputFormat {
-		case "json":
-			out := jsonResult{Path: path, Text: result.Text}
-			if cfg.showLineNumbers {
-				line := result.Line
-				out.Line = &line
+			count++
+			if cfg.quiet {
+				if !cfg.countOnly && !cancelledOnce {
+					cancel()
+					cancelledOnce = true
+				}
+				continue
 			}
-			_ = jsonEncoder.Encode(out)
-		default:
-			text := result.Text
-			if cfg.color {
-				text = highlightRanges(text, result.Ranges)
+			if cfg.countOnly {
+				continue
 			}
-			if cfg.showLineNumbers {
-				fmt.Fprintf(stdout, "%s:%d: %s\n", path, result.Line, text)
-			} else {
-				fmt.Fprintf(stdout, "%s: %s\n", path, text)
+
+			pathText := formatPath(result.Path, cfg.absPath)
+			switch cfg.outputFormat {
+			case "json":
+				out := jsonResult{Path: pathText, Text: result.Text}
+				if cfg.showLineNumbers {
+					line := result.Line
+					out.Line = &line
+				}
+				_ = jsonEncoder.Encode(out)
+			default:
+				text := result.Text
+				if cfg.color {
+					text = highlightRanges(text, result.Ranges)
+				}
+				if cfg.showLineNumbers {
+					fmt.Fprintf(stdout, "%s:%d: %s\n", pathText, result.Line, text)
+				} else {
+					fmt.Fprintf(stdout, "%s: %s\n", pathText, text)
+				}
 			}
 		}
 	}
+}
 
+func finalizePrint(count int, cfg Config, jsonEncoder *json.Encoder, stdout io.Writer) {
 	if cfg.countOnly && !cfg.quiet {
 		if cfg.outputFormat == "json" {
 			_ = jsonEncoder.Encode(map[string]int{"count": count})
@@ -478,18 +1012,15 @@ func printer(results <-chan Result, stdout io.Writer, cfg Config, done chan<- Pr
 			fmt.Fprintln(stdout, count)
 		}
 	}
-
-	done <- PrintSummary{MatchCount: count}
-	close(done)
 }
 
-func formatPath(path string, absolute bool) string {
+func formatPath(pathText string, absolute bool) string {
 	if !absolute {
-		return path
+		return pathText
 	}
-	abs, err := filepath.Abs(path)
+	abs, err := filepath.Abs(pathText)
 	if err != nil {
-		return path
+		return pathText
 	}
 	return abs
 }
@@ -513,4 +1044,58 @@ func highlightRanges(line string, ranges []MatchRange) string {
 	}
 	builder.WriteString(line[last:])
 	return builder.String()
+}
+
+func printMetrics(stderr io.Writer, metrics *workerMetrics) {
+	ioLive := metrics.ioWorkersStarted.Load() - metrics.ioWorkersStopped.Load()
+	cpuLive := metrics.cpuWorkersStarted.Load() - metrics.cpuWorkersStopped.Load()
+	ioIdle := ioLive - metrics.ioActiveWorkers.Load()
+	cpuIdle := cpuLive - metrics.cpuActiveWorkers.Load()
+
+	fmt.Fprintf(
+		stderr,
+		"metrics io(started=%d,stopped=%d,active=%d,idle=%d,max_active=%d) cpu(started=%d,stopped=%d,active=%d,idle=%d,max_active=%d,scaleups=%d) files(enqueued=%d,scanned=%d) lines(enqueued=%d,processed=%d) matches=%d\n",
+		metrics.ioWorkersStarted.Load(),
+		metrics.ioWorkersStopped.Load(),
+		metrics.ioActiveWorkers.Load(),
+		maxInt64(0, ioIdle),
+		metrics.ioMaxActive.Load(),
+		metrics.cpuWorkersStarted.Load(),
+		metrics.cpuWorkersStopped.Load(),
+		metrics.cpuActiveWorkers.Load(),
+		maxInt64(0, cpuIdle),
+		metrics.cpuMaxActive.Load(),
+		metrics.scaleUps.Load(),
+		metrics.filesEnqueued.Load(),
+		metrics.filesScanned.Load(),
+		metrics.linesEnqueued.Load(),
+		metrics.linesProcessed.Load(),
+		metrics.matchesProduced.Load(),
+	)
+}
+
+func maxInt(a int, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func maxInt64(a int64, b int64) int64 {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func updateMaxActive(target *atomic.Int64, current int64) {
+	for {
+		existing := target.Load()
+		if current <= existing {
+			return
+		}
+		if target.CompareAndSwap(existing, current) {
+			return
+		}
+	}
 }
