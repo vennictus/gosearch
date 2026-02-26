@@ -1,18 +1,17 @@
 # gosearch
 
-```text
-   ____  ____  _________  _____  __________  ________
-  / __ \/ __ \/ ___/ __ \/ ___/ / ____/ __ \/ ____/ /
- / /_/ / / / /\__ \/ /_/ /\__ \ / __/ / /_/ / /   / /
-/ _, _/ /_/ /___/ / ____/___/ // /___/ _, _/ /___/ /___
-/_/ |_|\____//____/_/    /____//_____/_/ |_|\____/_____/
-```
+ ██████╗  ██████╗ ███████╗███████╗ █████╗ ██████╗  ██████╗██╗  ██╗
+██╔════╝ ██╔═══██╗██╔════╝██╔════╝██╔══██╗██╔══██╗██╔════╝██║  ██║
+██║  ███╗██║   ██║███████╗█████╗  ███████║██████╔╝██║     ███████║
+██║   ██║██║   ██║╚════██║██╔══╝  ██╔══██║██╔══██╗██║     ██╔══██║
+╚██████╔╝╚██████╔╝███████║███████╗██║  ██║██║  ██║╚██████╗██║  ██║
+ ╚═════╝  ╚═════╝ ╚══════╝╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝
 
 `gosearch` is a high-throughput, concurrency-first CLI search engine for real repositories.
 
 If standard grep-style workflows feel too bare and heavy codebases need more control, this is the upgrade path: recursive traversal, ignore-rule awareness, structured output, deterministic exit semantics, and deep observability when you need to tune performance.
 
-## What You Built
+## What this is 
 
 - Recursive search with streaming output.
 - Concurrency pipeline split into traversal, IO, CPU matching, and single-owner printing.
