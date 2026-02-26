@@ -1,9 +1,15 @@
-# Build artifacts
-/gosearch
-/gosearch.exe
-*.exe
-*.test
-*.out
+# Build output
+dist/
 
-# Coverage output
-coverage.out
+# Go binaries
+gosearch
+gosearch.exe
+
+# Go build artifacts
+*.out
+*.test
+
+# Editor junk
+.vscode/
+.idea/
+.DS_Storedist/

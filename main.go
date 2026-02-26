@@ -35,6 +35,11 @@ type MatchRange struct {
 }
 
 type Config struct {
+	configPath       string
+	showVersion      bool
+	completionTarget string
+	versionLabel     string
+
 	pattern         string
 	rootPath        string
 	ignoreCase      bool
@@ -133,7 +138,43 @@ type ignoreRule struct {
 	hasPath bool
 }
 
+type rcConfig struct {
+	IgnoreCase        *bool   `json:"ignore_case,omitempty"`
+	ShowLineNumbers   *bool   `json:"show_line_numbers,omitempty"`
+	WholeWord         *bool   `json:"whole_word,omitempty"`
+	Workers           *int    `json:"workers,omitempty"`
+	MaxSize           *string `json:"max_size,omitempty"`
+	Extensions        *string `json:"extensions,omitempty"`
+	ExcludeDir        *string `json:"exclude_dir,omitempty"`
+	CountOnly         *bool   `json:"count,omitempty"`
+	Quiet             *bool   `json:"quiet,omitempty"`
+	Color             *bool   `json:"color,omitempty"`
+	AbsPath           *bool   `json:"abs,omitempty"`
+	OutputFormat      *string `json:"format,omitempty"`
+	Regex             *bool   `json:"regex,omitempty"`
+	FollowSymlinks    *bool   `json:"follow_symlinks,omitempty"`
+	MaxDepth          *int    `json:"max_depth,omitempty"`
+	DynamicWorkers    *bool   `json:"dynamic_workers,omitempty"`
+	IOWorkers         *int    `json:"io_workers,omitempty"`
+	CPUWorkers        *int    `json:"cpu_workers,omitempty"`
+	MaxWorkers        *int    `json:"max_workers,omitempty"`
+	Backpressure      *int    `json:"backpressure,omitempty"`
+	Metrics           *bool   `json:"metrics,omitempty"`
+	Debug             *bool   `json:"debug,omitempty"`
+	Trace             *bool   `json:"trace,omitempty"`
+	MonitorGoroutines *bool   `json:"monitor_goroutines,omitempty"`
+	MonitorIntervalMs *int    `json:"monitor_interval_ms,omitempty"`
+}
+
 const usageText = "Usage: gosearch [flags] <pattern> <path>"
+
+const (
+	exitCodeMatchFound = 0
+	exitCodeNoMatches  = 1
+	exitCodeUsageError = 2
+)
+
+var version = "dev"
 
 func main() {
 	exitCode := run(os.Args[1:], os.Stdout, os.Stderr)
@@ -146,14 +187,30 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	if err != nil {
 		fmt.Fprintln(stderr, usageText)
 		fmt.Fprintln(stderr, err)
-		return 2
+		return exitCodeUsageError
+	}
+
+	if cfg.showVersion {
+		fmt.Fprintln(stdout, cfg.versionLabel)
+		return exitCodeMatchFound
+	}
+
+	if cfg.completionTarget != "" {
+		script, completionErr := completionScript(cfg.completionTarget)
+		if completionErr != nil {
+			fmt.Fprintln(stderr, usageText)
+			fmt.Fprintln(stderr, completionErr)
+			return exitCodeUsageError
+		}
+		fmt.Fprint(stdout, script)
+		return exitCodeMatchFound
 	}
 
 	cleanupProfile, profileErr := setupProfiling(cfg)
 	if profileErr != nil {
 		fmt.Fprintln(stderr, usageText)
 		fmt.Fprintln(stderr, profileErr)
-		return 2
+		return exitCodeUsageError
 	}
 	defer cleanupProfile()
 
@@ -161,7 +218,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	if err != nil {
 		fmt.Fprintln(stderr, usageText)
 		fmt.Fprintln(stderr, err)
-		return 2
+		return exitCodeUsageError
 	}
 
 	signalCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
@@ -238,7 +295,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 
 	if walkErr != nil && !errors.Is(walkErr, context.Canceled) {
 		fmt.Fprintln(stderr, walkErr)
-		return 2
+		return exitCodeUsageError
 	}
 
 	if cfg.metrics {
@@ -247,47 +304,66 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	}
 
 	if summary.MatchCount > 0 {
-		return 0
+		return exitCodeMatchFound
 	}
-	return 1
+	return exitCodeNoMatches
 }
 
 func parseConfig(args []string) (Config, error) {
+	rcPath := detectConfigPath(args)
+	rcDefaults, rcErr := loadRCConfig(rcPath)
+	if rcErr != nil {
+		return Config{}, rcErr
+	}
+
 	fs := flag.NewFlagSet("gosearch", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 
-	ignoreCase := fs.Bool("i", false, "case-insensitive search")
-	showLineNumbers := fs.Bool("n", true, "show line numbers")
-	wholeWord := fs.Bool("w", false, "whole-word matching")
-	workers := fs.Int("workers", runtime.NumCPU(), "base worker count")
-	maxSize := fs.String("max-size", "", "max file size in bytes, KB, MB, or GB")
-	extensions := fs.String("extensions", "", "comma-separated extensions, e.g. .go,.txt")
-	excludeDir := fs.String("exclude-dir", "", "comma-separated directory names to skip")
-	countOnly := fs.Bool("count", false, "print only total match count")
-	quiet := fs.Bool("quiet", false, "suppress output, use exit code only")
-	color := fs.Bool("color", false, "enable ANSI color and highlighting in plain output")
-	absPath := fs.Bool("abs", false, "print absolute paths")
-	outputFormat := fs.String("format", "plain", "output format: plain|json")
+	showVersion := fs.Bool("version", false, "print version")
+	completion := fs.String("completion", "", "print shell completion script: bash|zsh|fish")
+	configPath := fs.String("config", rcPath, "path to config file (.gosearchrc JSON)")
 
-	regexMode := fs.Bool("regex", false, "treat pattern as regex")
-	followSymlinks := fs.Bool("follow-symlinks", false, "follow symlinked files/directories")
-	maxDepth := fs.Int("max-depth", -1, "max traversal depth (-1 for unlimited)")
+	ignoreCase := fs.Bool("i", boolWithDefault(rcDefaults.IgnoreCase, false), "case-insensitive search")
+	showLineNumbers := fs.Bool("n", boolWithDefault(rcDefaults.ShowLineNumbers, true), "show line numbers")
+	wholeWord := fs.Bool("w", boolWithDefault(rcDefaults.WholeWord, false), "whole-word matching")
+	workers := fs.Int("workers", intWithDefault(rcDefaults.Workers, runtime.NumCPU()), "base worker count")
+	maxSize := fs.String("max-size", stringWithDefault(rcDefaults.MaxSize, ""), "max file size in bytes, KB, MB, or GB")
+	extensions := fs.String("extensions", stringWithDefault(rcDefaults.Extensions, ""), "comma-separated extensions, e.g. .go,.txt")
+	excludeDir := fs.String("exclude-dir", stringWithDefault(rcDefaults.ExcludeDir, ""), "comma-separated directory names to skip")
+	countOnly := fs.Bool("count", boolWithDefault(rcDefaults.CountOnly, false), "print only total match count")
+	quiet := fs.Bool("quiet", boolWithDefault(rcDefaults.Quiet, false), "suppress output, use exit code only")
+	color := fs.Bool("color", boolWithDefault(rcDefaults.Color, false), "enable ANSI color and highlighting in plain output")
+	absPath := fs.Bool("abs", boolWithDefault(rcDefaults.AbsPath, false), "print absolute paths")
+	outputFormat := fs.String("format", stringWithDefault(rcDefaults.OutputFormat, "plain"), "output format: plain|json")
 
-	dynamicWorkers := fs.Bool("dynamic-workers", false, "dynamically scale CPU workers")
-	ioWorkers := fs.Int("io-workers", 0, "number of IO workers (0=auto)")
-	cpuWorkers := fs.Int("cpu-workers", 0, "number of CPU workers (0=auto)")
-	maxWorkers := fs.Int("max-workers", 0, "max CPU workers when dynamic scaling is enabled (0=auto)")
-	backpressure := fs.Int("backpressure", 0, "channel buffer size (0=auto)")
-	metrics := fs.Bool("metrics", false, "print worker lifecycle metrics")
-	debug := fs.Bool("debug", false, "enable debug logging")
-	trace := fs.Bool("trace", false, "enable verbose execution trace")
-	monitorGoroutines := fs.Bool("monitor-goroutines", false, "periodically log goroutine count")
-	monitorIntervalMs := fs.Int("monitor-interval-ms", 250, "goroutine monitor interval in milliseconds")
+	regexMode := fs.Bool("regex", boolWithDefault(rcDefaults.Regex, false), "treat pattern as regex")
+	followSymlinks := fs.Bool("follow-symlinks", boolWithDefault(rcDefaults.FollowSymlinks, false), "follow symlinked files/directories")
+	maxDepth := fs.Int("max-depth", intWithDefault(rcDefaults.MaxDepth, -1), "max traversal depth (-1 for unlimited)")
+
+	dynamicWorkers := fs.Bool("dynamic-workers", boolWithDefault(rcDefaults.DynamicWorkers, false), "dynamically scale CPU workers")
+	ioWorkers := fs.Int("io-workers", intWithDefault(rcDefaults.IOWorkers, 0), "number of IO workers (0=auto)")
+	cpuWorkers := fs.Int("cpu-workers", intWithDefault(rcDefaults.CPUWorkers, 0), "number of CPU workers (0=auto)")
+	maxWorkers := fs.Int("max-workers", intWithDefault(rcDefaults.MaxWorkers, 0), "max CPU workers when dynamic scaling is enabled (0=auto)")
+	backpressure := fs.Int("backpressure", intWithDefault(rcDefaults.Backpressure, 0), "channel buffer size (0=auto)")
+	metrics := fs.Bool("metrics", boolWithDefault(rcDefaults.Metrics, false), "print worker lifecycle metrics")
+	debug := fs.Bool("debug", boolWithDefault(rcDefaults.Debug, false), "enable debug logging")
+	trace := fs.Bool("trace", boolWithDefault(rcDefaults.Trace, false), "enable verbose execution trace")
+	monitorGoroutines := fs.Bool("monitor-goroutines", boolWithDefault(rcDefaults.MonitorGoroutines, false), "periodically log goroutine count")
+	monitorIntervalMs := fs.Int("monitor-interval-ms", intWithDefault(rcDefaults.MonitorIntervalMs, 250), "goroutine monitor interval in milliseconds")
 	cpuProfile := fs.String("cpuprofile", "", "write CPU profile to file")
 	memProfile := fs.String("memprofile", "", "write heap profile to file on exit")
 
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
+	}
+
+	if *showVersion || strings.TrimSpace(*completion) != "" {
+		return Config{
+			showVersion:      *showVersion,
+			completionTarget: strings.TrimSpace(*completion),
+			configPath:       strings.TrimSpace(*configPath),
+			versionLabel:     versionString(),
+		}, nil
 	}
 
 	remaining := fs.Args()
@@ -371,6 +447,10 @@ func parseConfig(args []string) (Config, error) {
 	}
 
 	cfg := Config{
+		configPath:        strings.TrimSpace(*configPath),
+		showVersion:       *showVersion,
+		completionTarget:  strings.TrimSpace(*completion),
+		versionLabel:      versionString(),
 		pattern:           pattern,
 		rootPath:          rootPath,
 		ignoreCase:        *ignoreCase,
@@ -404,6 +484,183 @@ func parseConfig(args []string) (Config, error) {
 	}
 
 	return cfg, nil
+}
+
+func detectConfigPath(args []string) string {
+	defaultPath := ".gosearchrc"
+	for i := 0; i < len(args); i++ {
+		item := args[i]
+		if item == "-config" && i+1 < len(args) {
+			return strings.TrimSpace(args[i+1])
+		}
+		if strings.HasPrefix(item, "-config=") {
+			return strings.TrimSpace(strings.TrimPrefix(item, "-config="))
+		}
+	}
+	return defaultPath
+}
+
+func loadRCConfig(path string) (rcConfig, error) {
+	trimmed := strings.TrimSpace(path)
+	if trimmed == "" {
+		return rcConfig{}, nil
+	}
+
+	content, err := os.ReadFile(trimmed)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return rcConfig{}, nil
+		}
+		return rcConfig{}, fmt.Errorf("config: %w", err)
+	}
+
+	var cfg rcConfig
+	if err := json.Unmarshal(content, &cfg); err != nil {
+		return rcConfig{}, fmt.Errorf("config parse: %w", err)
+	}
+	return cfg, nil
+}
+
+func boolWithDefault(value *bool, fallback bool) bool {
+	if value == nil {
+		return fallback
+	}
+	return *value
+}
+
+func intWithDefault(value *int, fallback int) int {
+	if value == nil {
+		return fallback
+	}
+	return *value
+}
+
+func stringWithDefault(value *string, fallback string) string {
+	if value == nil {
+		return fallback
+	}
+	return strings.TrimSpace(*value)
+}
+
+func versionString() string {
+	if strings.TrimSpace(version) == "" {
+		return "dev"
+	}
+	return version
+}
+
+func completionScript(target string) (string, error) {
+	shell := strings.ToLower(strings.TrimSpace(target))
+	switch shell {
+	case "bash":
+		return bashCompletionScript(), nil
+	case "zsh":
+		return zshCompletionScript(), nil
+	case "fish":
+		return fishCompletionScript(), nil
+	default:
+		return "", errors.New("completion must be one of: bash, zsh, fish")
+	}
+}
+
+func bashCompletionScript() string {
+	return `# bash completion for gosearch
+_gosearch_completion() {
+  local cur prev
+  COMPREPLY=()
+  cur="${COMP_WORDS[COMP_CWORD]}"
+  prev="${COMP_WORDS[COMP_CWORD-1]}"
+  local opts="-i -n -w -workers -max-size -extensions -exclude-dir -count -quiet -color -abs -format -regex -follow-symlinks -max-depth -dynamic-workers -io-workers -cpu-workers -max-workers -backpressure -metrics -debug -trace -monitor-goroutines -monitor-interval-ms -cpuprofile -memprofile -config -completion -version"
+  case "$prev" in
+    -format)
+      COMPREPLY=( $(compgen -W "plain json" -- "$cur") )
+      return 0
+      ;;
+    -completion)
+      COMPREPLY=( $(compgen -W "bash zsh fish" -- "$cur") )
+      return 0
+      ;;
+  esac
+  if [[ "$cur" == -* ]]; then
+    COMPREPLY=( $(compgen -W "$opts" -- "$cur") )
+  fi
+}
+complete -F _gosearch_completion gosearch
+`
+}
+
+func zshCompletionScript() string {
+	return `#compdef gosearch
+_gosearch_completion() {
+  _arguments \
+    '-i[case-insensitive matching]' \
+    '-n[show line numbers]' \
+    '-w[whole-word matching]' \
+    '-workers[worker pool size]:workers:' \
+    '-max-size[max file size]:size:' \
+    '-extensions[extensions list]:exts:' \
+    '-exclude-dir[exclude dirs]:dirs:' \
+    '-count[count only]' \
+    '-quiet[quiet mode]' \
+    '-color[color output]' \
+    '-abs[absolute path output]' \
+    '-format[output format]:format:(plain json)' \
+    '-regex[regex mode]' \
+    '-follow-symlinks[follow symlinks]' \
+    '-max-depth[max traversal depth]:depth:' \
+    '-dynamic-workers[dynamic scaling]' \
+    '-io-workers[io workers]:count:' \
+    '-cpu-workers[cpu workers]:count:' \
+    '-max-workers[max cpu workers]:count:' \
+    '-backpressure[channel buffer size]:count:' \
+    '-metrics[print metrics]' \
+    '-debug[debug logging]' \
+    '-trace[verbose trace]' \
+    '-monitor-goroutines[monitor goroutine count]' \
+    '-monitor-interval-ms[monitor interval ms]:ms:' \
+    '-cpuprofile[cpu profile file]:file:_files' \
+    '-memprofile[mem profile file]:file:_files' \
+    '-config[config file]:file:_files' \
+    '-completion[print shell completion]:shell:(bash zsh fish)' \
+    '-version[print version]' \
+    '*:args:_files'
+}
+_gosearch_completion "$@"
+`
+}
+
+func fishCompletionScript() string {
+	return `complete -c gosearch -l i -d 'case-insensitive matching'
+complete -c gosearch -l n -d 'show line numbers'
+complete -c gosearch -l w -d 'whole-word matching'
+complete -c gosearch -l workers -r -d 'worker pool size'
+complete -c gosearch -l max-size -r -d 'max file size'
+complete -c gosearch -l extensions -r -d 'extensions list'
+complete -c gosearch -l exclude-dir -r -d 'exclude directories'
+complete -c gosearch -l count -d 'count only'
+complete -c gosearch -l quiet -d 'quiet mode'
+complete -c gosearch -l color -d 'color output'
+complete -c gosearch -l abs -d 'absolute paths'
+complete -c gosearch -l format -r -a 'plain json' -d 'output format'
+complete -c gosearch -l regex -d 'regex mode'
+complete -c gosearch -l follow-symlinks -d 'follow symlinks'
+complete -c gosearch -l max-depth -r -d 'max traversal depth'
+complete -c gosearch -l dynamic-workers -d 'dynamic cpu workers'
+complete -c gosearch -l io-workers -r -d 'io worker count'
+complete -c gosearch -l cpu-workers -r -d 'cpu worker count'
+complete -c gosearch -l max-workers -r -d 'max cpu worker count'
+complete -c gosearch -l backpressure -r -d 'channel buffer size'
+complete -c gosearch -l metrics -d 'print metrics'
+complete -c gosearch -l debug -d 'debug logs'
+complete -c gosearch -l trace -d 'verbose trace'
+complete -c gosearch -l monitor-goroutines -d 'monitor goroutines'
+complete -c gosearch -l monitor-interval-ms -r -d 'monitor interval ms'
+complete -c gosearch -l cpuprofile -r -d 'cpu profile output'
+complete -c gosearch -l memprofile -r -d 'memory profile output'
+complete -c gosearch -l config -r -d 'config file'
+complete -c gosearch -l completion -r -a 'bash zsh fish' -d 'print completion script'
+complete -c gosearch -l version -d 'print version'
+`
 }
 
 func parseSize(input string) (int64, error) {

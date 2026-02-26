@@ -32,6 +32,56 @@ func TestScanFileMatching(t *testing.T) {
 	}
 }
 
+func TestVersionFlag(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	exitCode := run([]string{"-version"}, &stdout, &stderr)
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0 for version, got %d", exitCode)
+	}
+	if strings.TrimSpace(stdout.String()) == "" {
+		t.Fatalf("expected version output, got empty stdout")
+	}
+}
+
+func TestCompletionFlag(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	exitCode := run([]string{"-completion", "bash"}, &stdout, &stderr)
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0 for completion, got %d", exitCode)
+	}
+	if !strings.Contains(stdout.String(), "complete -F _gosearch_completion") {
+		t.Fatalf("expected bash completion script output, got: %s", stdout.String())
+	}
+}
+
+func TestConfigFileDefaults(t *testing.T) {
+	root := t.TempDir()
+	configPath := filepath.Join(root, ".gosearchrc")
+	fixturePath := filepath.Join(root, "a.txt")
+
+	if err := os.WriteFile(fixturePath, []byte("needle here\n"), 0o644); err != nil {
+		t.Fatalf("failed to write fixture: %v", err)
+	}
+	config := `{"ignore_case":true,"workers":1}`
+	if err := os.WriteFile(configPath, []byte(config), 0o644); err != nil {
+		t.Fatalf("failed to write config: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	exitCode := run([]string{"-config", configPath, "NEEDLE", root}, &stdout, &stderr)
+	if exitCode != 0 {
+		t.Fatalf("expected config-driven case-insensitive match, got %d stderr=%s", exitCode, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "needle here") {
+		t.Fatalf("expected matched output, got %s", stdout.String())
+	}
+}
+
 func TestBinaryDetection(t *testing.T) {
 	path := filepath.Join("testdata", "binary", "binary.dat")
 	isBinary, err := isBinaryFile(path)

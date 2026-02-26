@@ -1,0 +1,86 @@
+.TH GOSEARCH 1 "February 2026" "gosearch" "User Commands"
+.SH NAME
+gosearch \- concurrent recursive text search CLI
+.SH SYNOPSIS
+.B gosearch
+.RI [ flags ] " <pattern> <path>"
+.SH DESCRIPTION
+gosearch recursively searches files for matches using a concurrent traversal + worker pipeline.
+.SH FLAGS
+.TP
+.B \-i
+Case-insensitive matching.
+.TP
+.B \-w
+Whole-word matching.
+.TP
+.B \-regex
+Treat pattern as a regular expression.
+.TP
+.B \-workers N
+Base worker count.
+.TP
+.B \-io-workers N
+IO worker count (0 = auto).
+.TP
+.B \-cpu-workers N
+CPU worker count (0 = auto).
+.TP
+.B \-max-workers N
+Maximum CPU workers when dynamic scaling is enabled.
+.TP
+.B \-dynamic-workers
+Enable dynamic CPU worker scaling.
+.TP
+.B \-extensions LIST
+Comma-separated extension allowlist (example: .go,.txt).
+.TP
+.B \-exclude-dir LIST
+Comma-separated directory names to skip.
+.TP
+.B \-max-depth N
+Limit traversal depth (-1 for unlimited).
+.TP
+.B \-follow-symlinks
+Follow symlinked files/directories.
+.TP
+.B \-format plain|json
+Output mode.
+.TP
+.B \-count
+Print only total match count.
+.TP
+.B \-quiet
+Suppress output, use exit code only.
+.TP
+.B \-config FILE
+Read defaults from config file (JSON), typically .gosearchrc.
+.TP
+.B \-completion SHELL
+Print shell completion script for bash, zsh, or fish.
+.TP
+.B \-version
+Print build version.
+.SH CONFIG FILE
+The config file is JSON. CLI flags override config file values.
+.PP
+Example:
+.PP
+{
+  "ignore_case": true,
+  "workers": 8,
+  "format": "json"
+}
+.SH EXIT STATUS
+.TP
+.B 0
+One or more matches found.
+.TP
+.B 1
+No matches found.
+.TP
+.B 2
+Invalid usage or fatal setup/runtime error.
+.SH SEE ALSO
+.BR grep (1),
+.BR ripgrep (1)

@@ -47,6 +47,25 @@ gosearch -i -w -workers 4 needle ./testdata/small
 - `-monitor-interval-ms` goroutine monitor interval in milliseconds
 - `-cpuprofile file.out` write CPU profile
 - `-memprofile file.out` write heap profile on exit
+- `-config file` load defaults from `.gosearchrc` JSON
+- `-completion bash|zsh|fish` print completion script
+- `-version` print build version
+
+Config file support:
+
+- Default config file path is `.gosearchrc`.
+- Config file format is JSON.
+- CLI flags override config file defaults.
+
+Example `.gosearchrc`:
+
+```json
+{
+	"ignore_case": true,
+	"workers": 8,
+	"format": "json"
+}
+```
 
 ### Output format
 
@@ -92,18 +111,64 @@ JSON mode (`-format json`):
 - Property-based tests cover ignore-rule semantics.
 - Metrics mode now includes phase timings (`walk`, `scan`, `print`, `total`).
 
+## CLI Ecosystem
+
+- Man page: `man/gosearch.1`
+- Completion assets:
+	- `completions/bash/gosearch.bash`
+	- `completions/zsh/_gosearch`
+	- `completions/fish/gosearch.fish`
+
+Install man page locally example:
+
+```bash
+sudo cp man/gosearch.1 /usr/local/share/man/man1/
+man gosearch
+```
+
+Generate completion scripts from CLI:
+
+```bash
+gosearch -completion bash
+gosearch -completion zsh
+gosearch -completion fish
+```
+
+## Packaging & Releases
+
+- Cross-compile builds: `make cross VERSION=vX.Y.Z`
+- Release + checksums: `make release VERSION=vX.Y.Z`
+- Release automation scripts:
+	- `scripts/release.sh`
+	- `scripts/release.ps1`
+- Version injection:
+
+```bash
+go build -ldflags "-X main.version=vX.Y.Z" -o gosearch .
+```
+
+## Documentation Artifacts
+
+- Architecture diagram: `docs/architecture.md`
+- Concurrency diagram: `docs/concurrency.md`
+- Performance report: `docs/performance-report.md`
+- Design tradeoff log: `docs/design-tradeoffs.md`
+- Why-not-X section: `docs/why-not-x.md`
+
 ## Architecture
 
 Execution flow:
 
 1. Parse CLI args
 2. Create cancellable context with SIGINT handling
-3. Start worker pool (`runtime.NumCPU()` workers)
-4. Start a single printer goroutine
-5. Traverse filesystem with ignore-rule pruning and depth/symlink controls
-6. IO workers read files and emit line jobs
-7. CPU workers apply match strategy and emit results
-8. Printer streams results as they arrive
+3. Resolve config defaults (including optional `.gosearchrc`)
+4. Build precompiled match strategy (substring or regex)
+5. Start single printer goroutine
+6. Start IO and CPU worker pools (with optional dynamic CPU scaling)
+7. Traverse filesystem with ignore-rule pruning and depth/symlink controls
+8. IO workers read files and emit line jobs
+9. CPU workers apply match strategy and emit results
+10. Printer streams results and finalizes exit outcome
 
 ## Concurrency Model
 
@@ -156,4 +221,4 @@ Go provides simple primitives for concurrency (goroutines, channels, context), s
 
 ## Future Work (Not Implemented)
 
-- Performance benchmarking
+- Stage 5 scope
