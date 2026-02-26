@@ -41,6 +41,12 @@ gosearch -i -w -workers 4 needle ./testdata/small
 - `-max-workers` dynamic mode CPU worker cap (`0` auto)
 - `-backpressure` buffered channel size (`0` auto)
 - `-metrics` print worker lifecycle and throughput metrics
+- `-debug` enable debug logging
+- `-trace` enable verbose execution trace
+- `-monitor-goroutines` periodically report goroutine count
+- `-monitor-interval-ms` goroutine monitor interval in milliseconds
+- `-cpuprofile file.out` write CPU profile
+- `-memprofile file.out` write heap profile on exit
 
 ### Output format
 
@@ -78,6 +84,13 @@ JSON mode (`-format json`):
 - Regex mode has higher CPU cost than plain substring mode.
 - Ignore-rule parsing adds traversal overhead, especially on deeply nested trees with many ignore files.
 - Dynamic worker scaling improves throughput under bursty loads but may increase scheduling overhead.
+
+## Stage-3 Engineering Tooling
+
+- Benchmarks are available for scanner vs reader performance, worker scaling, and large-directory stress.
+- Fuzz tests cover parser and matcher robustness.
+- Property-based tests cover ignore-rule semantics.
+- Metrics mode now includes phase timings (`walk`, `scan`, `print`, `total`).
 
 ## Architecture
 

@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"runtime/pprof"
 	"strconv"
 	"strings"
 	"sync"
@@ -53,12 +54,18 @@ type Config struct {
 	followSymlinks bool
 	maxDepth       int
 
-	dynamicWorkers bool
-	ioWorkers      int
-	cpuWorkers     int
-	maxWorkers     int
-	backpressure   int
-	metrics        bool
+	dynamicWorkers   bool
+	ioWorkers        int
+	cpuWorkers       int
+	maxWorkers       int
+	backpressure     int
+	metrics          bool
+	debug            bool
+	trace            bool
+	monitorGoroutine bool
+	monitorInterval  time.Duration
+	cpuProfilePath   string
+	memProfilePath   string
 
 	defaultIgnoreDirs map[string]struct{}
 }
@@ -111,6 +118,13 @@ type workerMetrics struct {
 	scaleUps          atomic.Int64
 }
 
+type phaseTimings struct {
+	walk  time.Duration
+	scan  time.Duration
+	print time.Duration
+	total time.Duration
+}
+
 type ignoreRule struct {
 	baseDir string
 	pattern string
@@ -127,12 +141,21 @@ func main() {
 }
 
 func run(args []string, stdout io.Writer, stderr io.Writer) int {
+	startTotal := time.Now()
 	cfg, err := parseConfig(args)
 	if err != nil {
 		fmt.Fprintln(stderr, usageText)
 		fmt.Fprintln(stderr, err)
 		return 2
 	}
+
+	cleanupProfile, profileErr := setupProfiling(cfg)
+	if profileErr != nil {
+		fmt.Fprintln(stderr, usageText)
+		fmt.Fprintln(stderr, profileErr)
+		return 2
+	}
+	defer cleanupProfile()
 
 	strategy, err := buildStrategy(cfg)
 	if err != nil {
@@ -147,6 +170,16 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 	defer cancel()
 
 	metrics := &workerMetrics{}
+	timings := phaseTimings{}
+
+	tracef(cfg, stderr, "runtime start")
+
+	monitorDone := make(chan struct{})
+	if cfg.monitorGoroutine {
+		go monitorGoroutines(ctx, cfg, stderr, monitorDone)
+	} else {
+		close(monitorDone)
+	}
 
 	pathJobs := make(chan string, cfg.backpressure)
 	lineJobs := make(chan lineItem, cfg.backpressure)
@@ -179,17 +212,29 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 		go ioWorker(ctx, cfg, pathJobs, lineJobs, stderr, &ioWG, metrics)
 	}
 
+	startWalk := time.Now()
 	walkErr := walkFiles(ctx, cfg, pathJobs, stderr, metrics)
+	timings.walk = time.Since(startWalk)
+	tracef(cfg, stderr, "phase walk finished in %s", timings.walk)
 	close(pathJobs)
 
+	startScan := time.Now()
 	ioWG.Wait()
 	close(lineJobs)
 	close(scaleStop)
 	<-scaleDone
 
 	cpuWG.Wait()
+	timings.scan = time.Since(startScan)
+	tracef(cfg, stderr, "phase scan finished in %s", timings.scan)
+
+	startPrint := time.Now()
 	close(results)
 	summary := <-printerDone
+	timings.print = time.Since(startPrint)
+	timings.total = time.Since(startTotal)
+	tracef(cfg, stderr, "phase print finished in %s", timings.print)
+	<-monitorDone
 
 	if walkErr != nil && !errors.Is(walkErr, context.Canceled) {
 		fmt.Fprintln(stderr, walkErr)
@@ -198,6 +243,7 @@ func run(args []string, stdout io.Writer, stderr io.Writer) int {
 
 	if cfg.metrics {
 		printMetrics(stderr, metrics)
+		printPhaseTimings(stderr, timings)
 	}
 
 	if summary.MatchCount > 0 {
@@ -233,6 +279,12 @@ func parseConfig(args []string) (Config, error) {
 	maxWorkers := fs.Int("max-workers", 0, "max CPU workers when dynamic scaling is enabled (0=auto)")
 	backpressure := fs.Int("backpressure", 0, "channel buffer size (0=auto)")
 	metrics := fs.Bool("metrics", false, "print worker lifecycle metrics")
+	debug := fs.Bool("debug", false, "enable debug logging")
+	trace := fs.Bool("trace", false, "enable verbose execution trace")
+	monitorGoroutines := fs.Bool("monitor-goroutines", false, "periodically log goroutine count")
+	monitorIntervalMs := fs.Int("monitor-interval-ms", 250, "goroutine monitor interval in milliseconds")
+	cpuProfile := fs.String("cpuprofile", "", "write CPU profile to file")
+	memProfile := fs.String("memprofile", "", "write heap profile to file on exit")
 
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
@@ -304,6 +356,10 @@ func parseConfig(args []string) (Config, error) {
 		return Config{}, errors.New("backpressure must be at least 1")
 	}
 
+	if *monitorIntervalMs < 10 {
+		return Config{}, errors.New("monitor-interval-ms must be at least 10")
+	}
+
 	excluded := parseCSVSet(*excludeDir, false)
 	defaults := map[string]struct{}{
 		".git":         {},
@@ -338,6 +394,12 @@ func parseConfig(args []string) (Config, error) {
 		maxWorkers:        resolvedMaxWorkers,
 		backpressure:      resolvedBackpressure,
 		metrics:           *metrics,
+		debug:             *debug,
+		trace:             *trace,
+		monitorGoroutine:  *monitorGoroutines,
+		monitorInterval:   time.Duration(*monitorIntervalMs) * time.Millisecond,
+		cpuProfilePath:    strings.TrimSpace(*cpuProfile),
+		memProfilePath:    strings.TrimSpace(*memProfile),
 		defaultIgnoreDirs: defaults,
 	}
 
@@ -1072,6 +1134,80 @@ func printMetrics(stderr io.Writer, metrics *workerMetrics) {
 		metrics.linesProcessed.Load(),
 		metrics.matchesProduced.Load(),
 	)
+}
+
+func printPhaseTimings(stderr io.Writer, timings phaseTimings) {
+	fmt.Fprintf(
+		stderr,
+		"timings walk=%s scan=%s print=%s total=%s\n",
+		timings.walk,
+		timings.scan,
+		timings.print,
+		timings.total,
+	)
+}
+
+func setupProfiling(cfg Config) (func(), error) {
+	cleanup := func() {}
+
+	if cfg.cpuProfilePath == "" && cfg.memProfilePath == "" {
+		return cleanup, nil
+	}
+
+	var cpuFile *os.File
+	if cfg.cpuProfilePath != "" {
+		file, err := os.Create(cfg.cpuProfilePath)
+		if err != nil {
+			return cleanup, fmt.Errorf("cpuprofile: %w", err)
+		}
+		if err := pprof.StartCPUProfile(file); err != nil {
+			_ = file.Close()
+			return cleanup, fmt.Errorf("cpuprofile start: %w", err)
+		}
+		cpuFile = file
+	}
+
+	cleanup = func() {
+		if cpuFile != nil {
+			pprof.StopCPUProfile()
+			_ = cpuFile.Close()
+		}
+		if cfg.memProfilePath != "" {
+			file, err := os.Create(cfg.memProfilePath)
+			if err == nil {
+				_ = pprof.WriteHeapProfile(file)
+				_ = file.Close()
+			}
+		}
+	}
+
+	return cleanup, nil
+}
+
+func monitorGoroutines(ctx context.Context, cfg Config, stderr io.Writer, done chan<- struct{}) {
+	defer close(done)
+	ticker := time.NewTicker(cfg.monitorInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			fmt.Fprintf(stderr, "goroutines count=%d\n", runtime.NumGoroutine())
+		}
+	}
+}
+
+func tracef(cfg Config, stderr io.Writer, format string, args ...any) {
+	if !cfg.trace && !cfg.debug {
+		return
+	}
+	prefix := "debug"
+	if cfg.trace {
+		prefix = "trace"
+	}
+	fmt.Fprintf(stderr, "%s: %s\n", prefix, fmt.Sprintf(format, args...))
 }
 
 func maxInt(a int, b int) int {
