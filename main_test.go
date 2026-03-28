@@ -10,6 +10,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"gosearch/internal/config"
+	"gosearch/internal/search"
 )
 
 func TestScanFileMatching(t *testing.T) {
@@ -203,13 +206,13 @@ func TestUsageMessageOnInvalidArgs(t *testing.T) {
 }
 
 func TestWorkersFlagAffectsConfig(t *testing.T) {
-	cfg, err := parseConfig([]string{"-workers", "1", "needle", filepath.Join("testdata", "small")})
+	cfg, err := config.Parse([]string{"-workers", "1", "needle", filepath.Join("testdata", "small")})
 	if err != nil {
-		t.Fatalf("parseConfig returned error: %v", err)
+		t.Fatalf("config.Parse returned error: %v", err)
 	}
 
-	if cfg.workers != 1 {
-		t.Fatalf("expected workers to be 1, got %d", cfg.workers)
+	if cfg.Workers != 1 {
+		t.Fatalf("expected workers to be 1, got %d", cfg.Workers)
 	}
 }
 
@@ -244,7 +247,7 @@ func TestWholeWordMatching(t *testing.T) {
 		t.Fatalf("failed to write fixture: %v", err)
 	}
 
-	matches, err := scanFileWithMatcher(filePath, newMatcher("needle", false, true), 0)
+	matches, err := search.ScanFileWithMatcher(filePath, search.NewMatcher("needle", false, true), 0)
 	if err != nil {
 		t.Fatalf("scanFileWithMatcher returned error: %v", err)
 	}
@@ -526,15 +529,15 @@ func TestMaxDepth(t *testing.T) {
 }
 
 func TestDynamicWorkersConfig(t *testing.T) {
-	cfg, err := parseConfig([]string{"-dynamic-workers", "-cpu-workers", "2", "-max-workers", "4", "needle", filepath.Join("testdata", "small")})
+	cfg, err := config.Parse([]string{"-dynamic-workers", "-cpu-workers", "2", "-max-workers", "4", "needle", filepath.Join("testdata", "small")})
 	if err != nil {
-		t.Fatalf("parseConfig returned error: %v", err)
+		t.Fatalf("config.Parse returned error: %v", err)
 	}
-	if !cfg.dynamicWorkers {
+	if !cfg.DynamicWorkers {
 		t.Fatalf("expected dynamic-workers to be enabled")
 	}
-	if cfg.cpuWorkers != 2 || cfg.maxWorkers != 4 {
-		t.Fatalf("unexpected worker config: cpu=%d max=%d", cfg.cpuWorkers, cfg.maxWorkers)
+	if cfg.CPUWorkers != 2 || cfg.MaxWorkers != 4 {
+		t.Fatalf("unexpected worker config: cpu=%d max=%d", cfg.CPUWorkers, cfg.MaxWorkers)
 	}
 }
 

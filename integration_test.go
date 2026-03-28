@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"testing/quick"
+
+	"gosearch/internal/ignore"
 )
 
 func TestDeterministicHarness(t *testing.T) {
@@ -28,14 +30,14 @@ func TestIgnoreNegationProperty(t *testing.T) {
 			name = "x.txt"
 		}
 
-		cfg := Config{}
+		defaultIgnoreDirs := map[string]struct{}{}
 		base := `C:\tmp`
 		pathText := filepath.Join(base, name)
-		plainRule := ignoreRule{baseDir: base, pattern: name, negate: false, hasPath: false}
-		negRule := ignoreRule{baseDir: base, pattern: name, negate: true, hasPath: false}
+		plainRule := ignore.Rule{BaseDir: base, Pattern: name, Negate: false, HasPath: false}
+		negRule := ignore.Rule{BaseDir: base, Pattern: name, Negate: true, HasPath: false}
 
-		ignoredByPlain := shouldIgnorePath(cfg, []ignoreRule{plainRule}, pathText, false)
-		ignoredByNeg := shouldIgnorePath(cfg, []ignoreRule{negRule}, pathText, false)
+		ignoredByPlain := ignore.ShouldIgnore(defaultIgnoreDirs, []ignore.Rule{plainRule}, pathText, false)
+		ignoredByNeg := ignore.ShouldIgnore(defaultIgnoreDirs, []ignore.Rule{negRule}, pathText, false)
 
 		return ignoredByPlain != ignoredByNeg
 	}

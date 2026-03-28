@@ -8,11 +8,13 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"gosearch/internal/search"
 )
 
 func BenchmarkScannerVsReader(b *testing.B) {
 	filePath := createBenchmarkFile(b)
-	matcher := newMatcher("needle", false, false)
+	matcher := search.NewMatcher("needle", false, false)
 
 	b.Run("scanner", func(b *testing.B) {
 		for i := 0; i < b.N; i++ {
@@ -56,15 +58,15 @@ func BenchmarkLargeDirectoryStress(b *testing.B) {
 	}
 }
 
-func scanWithScanner(path string, matcher Matcher) (int, error) {
-	matches, err := scanFileWithMatcher(path, matcher, 0)
+func scanWithScanner(path string, matcher search.Matcher) (int, error) {
+	matches, err := search.ScanFileWithMatcher(path, matcher, 0)
 	if err != nil {
 		return 0, err
 	}
 	return len(matches), nil
 }
 
-func scanWithReader(path string, matcher Matcher) (int, error) {
+func scanWithReader(path string, matcher search.Matcher) (int, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return 0, err

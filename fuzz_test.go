@@ -1,6 +1,12 @@
 package main
 
-import "testing"
+import (
+	"testing"
+
+	"gosearch/internal/config"
+	"gosearch/internal/ignore"
+	"gosearch/internal/search"
+)
 
 func FuzzParseSize(f *testing.F) {
 	seeds := []string{"", "1", "128KB", "2MB", "3GB", "-1", "abc", "10 B"}
@@ -9,7 +15,7 @@ func FuzzParseSize(f *testing.F) {
 	}
 
 	f.Fuzz(func(t *testing.T, input string) {
-		_, _ = parseSize(input)
+		_, _ = config.ParseSize(input)
 	})
 }
 
@@ -22,7 +28,7 @@ func FuzzMatcherFindRanges(f *testing.F) {
 		if pattern == "" {
 			pattern = "x"
 		}
-		matcher := newMatcher(pattern, true, false)
+		matcher := search.NewMatcher(pattern, true, false)
 		ranges := matcher.FindRanges(line)
 		for _, r := range ranges {
 			if r.Start < 0 || r.End < r.Start || r.End > len(line) {
@@ -38,7 +44,8 @@ func FuzzRuleMatch(f *testing.F) {
 	f.Add("needle", "some/needle/path")
 
 	f.Fuzz(func(t *testing.T, pattern string, relPath string) {
-		rule := ignoreRule{pattern: pattern, hasPath: true}
-		_ = ruleMatch(rule, relPath)
+		rule := ignore.Rule{Pattern: pattern, HasPath: true}
+		defaultIgnoreDirs := map[string]struct{}{}
+		_ = ignore.ShouldIgnore(defaultIgnoreDirs, []ignore.Rule{rule}, relPath, false)
 	})
 }
