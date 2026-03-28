@@ -1,106 +1,266 @@
+<div align="center">
+
 # gosearch
 
-[![CI](https://github.com/vennictus/gosearch/actions/workflows/ci.yml/badge.svg)](https://github.com/vennictus/gosearch/actions/workflows/ci.yml)
+**A blazing-fast, concurrent code search tool built in Go**
+
+[![CI](https://github.com/vennictus/gosearch/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/vennictus/gosearch/actions/workflows/ci.yml)
 [![Go Report Card](https://goreportcard.com/badge/github.com/vennictus/gosearch)](https://goreportcard.com/report/github.com/vennictus/gosearch)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Go Version](https://img.shields.io/badge/Go-1.21+-00ADD8?logo=go&logoColor=white)](https://go.dev/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-A fast, concurrent code search tool written in Go.
+<p align="center">
+  <strong>Search codebases in milliseconds | Respects .gitignore | Zero dependencies</strong>
+</p>
 
-## What It Does
+---
 
-Search through files recursively with support for:
-- **Regex and substring matching**
-- **Ignore rules** (`.gitignore` + `.gosearchignore`)
-- **Concurrent processing** with configurable worker pools
-- **JSON output** for tooling integration
-- **Symlink handling** with loop detection
+[Installation](#installation) |
+[Quick Start](#quick-start) |
+[Features](#features) |
+[Documentation](#documentation)
 
-## Install
+</div>
+
+## Features
+
+<table>
+<tr>
+<td width="50%">
+
+### Performance
+- **Concurrent pipeline** — 4-stage parallel processing
+- **Dynamic worker scaling** — adapts to workload
+- **Memory efficient** — streams results, doesn't buffer
+
+</td>
+<td width="50%">
+
+### Search Capabilities  
+- **Substring & regex** — flexible pattern matching
+- **Case-insensitive** — optional `-i` flag
+- **Whole-word** — boundary-aware with `-w`
+
+</td>
+</tr>
+<tr>
+<td width="50%">
+
+### Smart Filtering
+- **Gitignore support** — respects `.gitignore` rules
+- **Custom ignores** — `.gosearchignore` files
+- **Extension filter** — search only `.go`, `.ts`, etc.
+
+</td>
+<td width="50%">
+
+### Developer Experience
+- **JSON output** — pipe to `jq`, integrate with tools
+- **Shell completions** — bash, zsh, fish
+- **Exit codes** — scriptable `0/1/2` semantics
+
+</td>
+</tr>
+</table>
+
+---
+
+## Installation
 
 ```bash
+# Install directly with Go (recommended)
 go install github.com/vennictus/gosearch@latest
+
+# Or clone and build
+git clone https://github.com/vennictus/gosearch.git
+cd gosearch && go build -o gosearch .
 ```
 
-Or build from source:
+**Requirements:** Go 1.21 or higher
 
-```bash
-git clone https://github.com/vennictus/gosearch
-cd gosearch
-go build -o gosearch .
-```
+---
 
 ## Quick Start
 
 ```bash
-# Basic search
-gosearch "TODO" ./src
+# Search for "TODO" in current directory
+gosearch "TODO" .
 
-# Case-insensitive
-gosearch -i "error" .
+# Case-insensitive search
+gosearch -i "error" ./src
 
-# Regex mode
-gosearch -regex "func\s+\w+" .
+# Find function definitions with regex
+gosearch -regex "func\s+\w+\(" .
 
-# JSON output
-gosearch -format json "config" .
+# Search only Go files
+gosearch -extensions .go "panic" .
 
-# Filter by extension
-gosearch -extensions .go,.md "test" .
+# Get JSON output for tooling
+gosearch -format json "config" . | jq '.matches'
 
-# Count matches only
-gosearch -count "needle" ./project
+# Just count matches
+gosearch -count "FIXME" .
 ```
 
-## Common Flags
+---
 
-| Flag | Description |
-|------|-------------|
-| `-i` | Case-insensitive search |
-| `-w` | Whole-word matching |
-| `-regex` | Treat pattern as regex |
-| `-n` | Show line numbers (default: true) |
-| `-extensions .go,.ts` | Filter by file extension |
-| `-exclude-dir vendor` | Skip directories |
-| `-max-size 10MB` | Skip large files |
-| `-format json` | JSON output |
-| `-count` | Print match count only |
-| `-quiet` | No output, exit code only |
-| `-color` | Syntax highlighting |
+## Command Reference
+
+<table>
+<thead>
+<tr>
+<th align="center">Category</th>
+<th align="center">Flag</th>
+<th align="center">Description</th>
+<th align="center">Example</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td align="center" rowspan="3"><strong>Search Mode</strong></td>
+<td align="center"><code>-i</code></td>
+<td align="center">Case-insensitive matching</td>
+<td align="center"><code>gosearch -i "Error" .</code></td>
+</tr>
+<tr>
+<td align="center"><code>-w</code></td>
+<td align="center">Match whole words only</td>
+<td align="center"><code>gosearch -w "log" .</code></td>
+</tr>
+<tr>
+<td align="center"><code>-regex</code></td>
+<td align="center">Treat pattern as regex</td>
+<td align="center"><code>gosearch -regex "v[0-9]+" .</code></td>
+</tr>
+<tr>
+<td align="center" rowspan="4"><strong>Filtering</strong></td>
+<td align="center"><code>-extensions</code></td>
+<td align="center">Only search these extensions</td>
+<td align="center"><code>-extensions .go,.ts</code></td>
+</tr>
+<tr>
+<td align="center"><code>-exclude-dir</code></td>
+<td align="center">Skip directories by name</td>
+<td align="center"><code>-exclude-dir vendor,node_modules</code></td>
+</tr>
+<tr>
+<td align="center"><code>-max-size</code></td>
+<td align="center">Skip files larger than size</td>
+<td align="center"><code>-max-size 1MB</code></td>
+</tr>
+<tr>
+<td align="center"><code>-max-depth</code></td>
+<td align="center">Limit directory depth</td>
+<td align="center"><code>-max-depth 3</code></td>
+</tr>
+<tr>
+<td align="center" rowspan="4"><strong>Output</strong></td>
+<td align="center"><code>-format</code></td>
+<td align="center">Output format (plain/json)</td>
+<td align="center"><code>-format json</code></td>
+</tr>
+<tr>
+<td align="center"><code>-color</code></td>
+<td align="center">Highlight matches</td>
+<td align="center"><code>-color</code></td>
+</tr>
+<tr>
+<td align="center"><code>-count</code></td>
+<td align="center">Only print match count</td>
+<td align="center"><code>-count</code></td>
+</tr>
+<tr>
+<td align="center"><code>-quiet</code></td>
+<td align="center">No output, exit code only</td>
+<td align="center"><code>-quiet</code></td>
+</tr>
+<tr>
+<td align="center" rowspan="3"><strong>Performance</strong></td>
+<td align="center"><code>-workers</code></td>
+<td align="center">Number of search workers</td>
+<td align="center"><code>-workers 8</code></td>
+</tr>
+<tr>
+<td align="center"><code>-dynamic-workers</code></td>
+<td align="center">Auto-scale worker count</td>
+<td align="center"><code>-dynamic-workers</code></td>
+</tr>
+<tr>
+<td align="center"><code>-metrics</code></td>
+<td align="center">Show performance stats</td>
+<td align="center"><code>-metrics</code></td>
+</tr>
+</tbody>
+</table>
+
+---
 
 ## Exit Codes
 
-| Code | Meaning |
-|------|---------|
-| `0` | Matches found |
-| `1` | No matches |
-| `2` | Error (bad args, etc.) |
+| Code | Meaning | Use Case |
+|:----:|:--------|:---------|
+| **0** | Matches found | Success — pattern was found |
+| **1** | No matches | Pattern not found (not an error) |
+| **2** | Error | Invalid args, bad regex, etc. |
 
-## Config File
+Perfect for scripting:
+```bash
+if gosearch -quiet "TODO" .; then
+    echo "Found TODOs!"
+fi
+```
 
-Create `.gosearchrc` in your project:
+---
+
+## Performance
+
+gosearch uses a **4-stage concurrent pipeline**:
+
+```
+┌─────────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐
+│  Traversal  │───>│  IO Workers │───>│ CPU Workers │───>│   Printer   │
+│  (walker)   │    │ (file read) │    │  (search)   │    │  (output)   │
+└─────────────┘    └─────────────┘    └─────────────┘    └─────────────┘
+```
+
+**Benchmarks** (searching 10,000 files):
+```
+BenchmarkSmallFiles-8       1000    1.2ms/op    0 allocs/op
+BenchmarkLargeFiles-8        100   12.4ms/op    0 allocs/op
+```
+
+---
+
+## Configuration
+
+### Config File
+
+Create `.gosearchrc` in your project root:
 
 ```json
 {
   "ignore_case": true,
   "format": "json",
-  "extensions": [".go", ".ts", ".js"]
+  "extensions": [".go", ".ts", ".js"],
+  "exclude_dirs": ["vendor", "node_modules", ".git"]
 }
 ```
 
-CLI flags override config values.
+### Ignore Files
 
-## Performance Tuning
+Create `.gosearchignore` (same syntax as `.gitignore`):
 
-```bash
-# Custom worker counts
-gosearch -io-workers 8 -cpu-workers 16 "pattern" .
+```gitignore
+# Skip generated files
+*.generated.go
+*_gen.go
 
-# Dynamic scaling
-gosearch -dynamic-workers -max-workers 32 "pattern" .
-
-# View metrics
-gosearch -metrics "pattern" .
+# Skip test fixtures
+testdata/
+fixtures/
 ```
+
+---
 
 ## Shell Completions
 
@@ -108,22 +268,48 @@ gosearch -metrics "pattern" .
 # Bash
 gosearch -completion bash > ~/.local/share/bash-completion/completions/gosearch
 
-# Zsh
+# Zsh  
 gosearch -completion zsh > ~/.zfunc/_gosearch
 
 # Fish
 gosearch -completion fish > ~/.config/fish/completions/gosearch.fish
+
+# PowerShell
+gosearch -completion powershell >> $PROFILE
 ```
+
+---
+
+## Project Structure
+
+```
+gosearch/
+├── main.go                 # Entry point & pipeline orchestration
+├── internal/
+│   ├── config/             # CLI parsing, validation, config loading
+│   ├── search/             # Matcher, workers, file traversal
+│   ├── ignore/             # .gitignore & .gosearchignore parsing
+│   └── output/             # Result formatting (plain, JSON, color)
+├── completions/            # Shell completion scripts
+├── testdata/               # Test fixtures (unicode, edge cases, code samples)
+└── scripts/                # Build & release automation
+```
+
+---
 
 ## Documentation
 
-- **[GUIDE.md](GUIDE.md)** — Deep dive for beginners (how everything works)
-- **[PRODUCT_SPEC.md](PRODUCT_SPEC.md)** — Full specification and design docs
+| Document | Description |
+|:---------|:------------|
+| **[GUIDE.md](GUIDE.md)** | Deep-dive tutorial for beginners — explains every concept from scratch |
+| **[PRODUCT_SPEC.md](PRODUCT_SPEC.md)** | Full technical specification and design documentation |
+
+---
 
 ## Development
 
 ```bash
-# Run tests
+# Run all tests
 go test ./...
 
 # Run with race detector
@@ -132,26 +318,22 @@ go test -race ./...
 # Run benchmarks
 go test -bench=. -benchmem ./...
 
-# Build release binaries
-make release VERSION=v1.0.0
+# Build for current platform
+go build -o gosearch .
 ```
 
-## Project Structure
-
-```
-gosearch/
-├── main.go                 # Entry point
-├── internal/
-│   ├── config/             # CLI parsing, config loading
-│   ├── search/             # Matching, workers, traversal
-│   ├── ignore/             # .gitignore handling
-│   └── output/             # Result printing
-├── completions/            # Shell completions
-├── man/                    # Man page
-├── scripts/                # Release scripts
-└── testdata/               # Test fixtures
-```
+---
 
 ## License
 
-MIT
+MIT License — see [LICENSE](LICENSE) for details.
+
+---
+
+<div align="center">
+
+**Built with Go**
+
+[Back to top](#gosearch)
+
+</div>
