@@ -1,0 +1,22 @@
+# Needle Search Configuration
+# This file configures needle detection
+
+[search]
+pattern = "needle"
+case_sensitive = false
+whole_word = true
+
+[paths]
+include = ["src/**/*.go", "lib/**/*.py"]
+exclude = ["vendor/", "node_modules/"]
+
+[output]
+# Output format for needle matches
+format = "json"
+color = true
+line_numbers = true
+
+[performance]
+# Workers for needle scanning
+workers = 8
+buffer_size = 1024

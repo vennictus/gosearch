@@ -1,0 +1,3 @@
+Line ending with LF needle
+Another line needle
+Third needle line

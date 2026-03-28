@@ -8,7 +8,7 @@ import (
 	"testing"
 	"testing/quick"
 
-	"gosearch/internal/ignore"
+	"github.com/vennictus/gosearch/internal/ignore"
 )
 
 func TestDeterministicHarness(t *testing.T) {

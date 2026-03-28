@@ -1,0 +1,10 @@
+First line no match
+
+needle after empty line
+
+
+Multiple empty lines above needle
+
+needle
+needle consecutive
+needle

@@ -3,9 +3,9 @@ package main
 import (
 	"testing"
 
-	"gosearch/internal/config"
-	"gosearch/internal/ignore"
-	"gosearch/internal/search"
+	"github.com/vennictus/gosearch/internal/config"
+	"github.com/vennictus/gosearch/internal/ignore"
+	"github.com/vennictus/gosearch/internal/search"
 )
 
 func FuzzParseSize(f *testing.F) {

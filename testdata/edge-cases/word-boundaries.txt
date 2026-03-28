@@ -1,0 +1,14 @@
+needles (plural)
+needled (past tense)
+needling (present participle)
+needle (exact match)
+aneedle (prefix attached)
+needlea (suffix attached)
+the-needle-pattern (hyphenated)
+_needle_ (underscored)
+"needle" (quoted)
+'needle' (single quoted)
+needle's (possessive)
+needle, comma after
+.needle. dots around
+/needle/ slashes

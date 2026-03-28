@@ -1,4 +1,7 @@
 // Package search provides IO and CPU worker implementations.
+// The search package implements the core scanning pipeline:
+// filesystem traversal → IO workers (file reading) → CPU workers (pattern matching).
+// All components are designed for concurrent execution with proper cancellation support.
 package search
 
 import (
@@ -11,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"gosearch/internal/config"
+	"github.com/vennictus/gosearch/internal/config"
 )
 
 // IOWorker reads files and sends lines to CPU workers.

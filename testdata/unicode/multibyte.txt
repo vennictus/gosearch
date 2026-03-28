@@ -1,0 +1,10 @@
+Testing multibyte character handling
+日本語のテキストでneedleを検索
+Ελληνικά needle Greek text
+한국어 needle Korean text
+ไทย needle Thai script
+हिन्दी needle Hindi text
+עברית needle Hebrew text
+Emoji boundary test: 👨‍👩‍👧‍👦needle👨‍👩‍👧‍👦
+Zero-width joiner: needle​invisible
+Combining marks: néédlé with accents

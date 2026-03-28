@@ -9,8 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"gosearch/internal/config"
-	"gosearch/internal/search"
+	"github.com/vennictus/gosearch/internal/config"
+	"github.com/vennictus/gosearch/internal/search"
 )
 
 // PrintSummary contains the final match count.

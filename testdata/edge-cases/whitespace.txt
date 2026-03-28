@@ -1,0 +1,8 @@
+   needle with leading spaces
+needle with trailing spaces   
+	needle with leading tab
+needle	with	embedded	tabs
+    needle    surrounded by spaces    
+		double tab needle
+needle at start
+  	  	mixed whitespace needle  	  	

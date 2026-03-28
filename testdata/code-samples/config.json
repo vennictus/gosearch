@@ -1,0 +1,20 @@
+{
+  "name": "needle-finder",
+  "version": "1.0.0",
+  "description": "Find needle patterns",
+  "config": {
+    "needle": {
+      "pattern": "needle",
+      "caseSensitive": false,
+      "wholeWord": true
+    },
+    "haystack": {
+      "sources": ["data with needle", "more needle data"],
+      "filters": ["needle-filter"]
+    }
+  },
+  "metadata": {
+    "author": "needle-team",
+    "tags": ["search", "needle", "pattern-matching"]
+  }
+}

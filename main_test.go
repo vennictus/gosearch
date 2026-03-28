@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"gosearch/internal/config"
-	"gosearch/internal/search"
+	"github.com/vennictus/gosearch/internal/config"
+	"github.com/vennictus/gosearch/internal/search"
 )
 
 func TestScanFileMatching(t *testing.T) {
@@ -776,4 +777,627 @@ func createLargeTestDir(t *testing.T) string {
 	}
 
 	return dir
+}
+
+// ============================================================================
+// UNICODE AND MULTIBYTE TESTS
+// ============================================================================
+
+func TestUnicodeEmojiMatching(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	exitCode := run([]string{"needle", filepath.Join("testdata", "unicode")}, &stdout, &stderr)
+	if exitCode != 0 {
+		t.Fatalf("expected matches in unicode dir, got exit %d, stderr: %s", exitCode, stderr.String())
+	}
+
+	output := stdout.String()
+	// Should match multiple lines with needle across emoji.txt and multibyte.txt
+	if !strings.Contains(output, "emoji.txt") {
+		t.Fatalf("expected emoji.txt in output:\n%s", output)
+	}
+}
+
+func TestUnicodeMultibyteCharacters(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	exitCode := run([]string{"needle", filepath.Join("testdata", "unicode")}, &stdout, &stderr)
+	if exitCode != 0 {
+		t.Fatalf("expected matches in unicode dir, got exit %d, stderr: %s", exitCode, stderr.String())
+	}
+
+	output := stdout.String()
+	// Verify matches work alongside Japanese, Greek, Korean, Thai, Hindi, Hebrew
+	expectedLanguages := []string{"日本語", "Ελληνικά", "한국어", "ไทย", "हिन्दी", "עברית"}
+	for _, lang := range expectedLanguages {
+		if !strings.Contains(output, lang) {
+			t.Fatalf("expected output to contain %s language text, got:\n%s", lang, output)
+		}
+	}
+}
+
+func TestCaseInsensitiveWithUnicode(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	exitCode := run([]string{"-i", "NEEDLE", filepath.Join("testdata", "unicode")}, &stdout, &stderr)
+	if exitCode != 0 {
+		t.Fatalf("expected case-insensitive unicode matches, got exit %d", exitCode)
+	}
+}
+
+// ============================================================================
+// EDGE CASE TESTS
+// ============================================================================
+
+func TestEmptyLinesHandling(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	exitCode := run([]string{"-count", "needle", filepath.Join("testdata", "edge-cases")}, &stdout, &stderr)
+	if exitCode != 0 {
+		t.Fatalf("expected matches in edge-cases, got exit %d, stderr: %s", exitCode, stderr.String())
+	}
+}
+
+func TestWhitespacePreservation(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	exitCode := run([]string{"needle", filepath.Join("testdata", "edge-cases")}, &stdout, &stderr)
+	if exitCode != 0 {
+		t.Fatalf("expected matches with whitespace, got exit %d", exitCode)
+	}
+
+	output := stdout.String()
+	// Verify leading spaces are preserved in whitespace.txt output
+	if !strings.Contains(output, "   needle with leading spaces") {
+		t.Fatalf("leading spaces not preserved in output:\n%s", output)
+	}
+}
+
+func TestLongLineMatching(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	exitCode := run([]string{"needle", filepath.Join("testdata", "edge-cases")}, &stdout, &stderr)
+	if exitCode != 0 {
+		t.Fatalf("expected matches in edge-cases, got exit %d", exitCode)
+	}
+
+	output := stdout.String()
+	// Should find needle in long-lines.txt
+	if !strings.Contains(output, "long-lines.txt") {
+		t.Fatalf("expected long-lines.txt in output:\n%s", output)
+	}
+}
+
+func TestSpecialRegexCharactersInSubstring(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	// Search for literal dot pattern without regex mode
+	exitCode := run([]string{"needle.with.dots", filepath.Join("testdata", "edge-cases")}, &stdout, &stderr)
+	if exitCode != 0 {
+		t.Fatalf("expected match for literal dots, got exit %d", exitCode)
+	}
+}
+
+func TestSpecialRegexCharactersInRegexMode(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	// In regex mode, dots should match any character
+	exitCode := run([]string{"-regex", "needle.with.dots", filepath.Join("testdata", "edge-cases")}, &stdout, &stderr)
+	if exitCode != 0 {
+		t.Fatalf("expected regex match, got exit %d", exitCode)
+	}
+
+	// Test escaped regex special chars
+	stdout.Reset()
+	stderr.Reset()
+	exitCode = run([]string{"-regex", `needle\*with\*asterisks`, filepath.Join("testdata", "edge-cases")}, &stdout, &stderr)
+	if exitCode != 0 {
+		t.Fatalf("expected escaped regex match, got exit %d, stderr: %s", exitCode, stderr.String())
+	}
+}
+
+func TestCaseVariations(t *testing.T) {
+	testCases := []struct {
+		name        string
+		flags       []string
+		minExpected int
+	}{
+		{"case-sensitive", []string{"-count", "needle"}, 1},
+		{"case-insensitive", []string{"-count", "-i", "needle"}, 5},
+		{"exact-upper", []string{"-count", "NEEDLE"}, 1},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+
+			args := append(tc.flags, filepath.Join("testdata", "edge-cases"))
+			exitCode := run(args, &stdout, &stderr)
+			if exitCode != 0 && tc.minExpected > 0 {
+				t.Fatalf("expected matches, got exit %d, stderr: %s", exitCode, stderr.String())
+			}
+
+			count := strings.TrimSpace(stdout.String())
+			countInt := 0
+			fmt.Sscanf(count, "%d", &countInt)
+			if countInt < tc.minExpected {
+				t.Fatalf("expected at least %d matches, got %d", tc.minExpected, countInt)
+			}
+		})
+	}
+}
+
+func TestWholeWordBoundaries(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	// Without whole-word flag, should match all
+	exitCode := run([]string{"-count", "needle", filepath.Join("testdata", "edge-cases")}, &stdout, &stderr)
+	if exitCode != 0 {
+		t.Fatalf("expected matches, got exit %d", exitCode)
+	}
+	allCount := strings.TrimSpace(stdout.String())
+
+	// With whole-word flag, should match fewer
+	stdout.Reset()
+	stderr.Reset()
+	exitCode = run([]string{"-count", "-w", "needle", filepath.Join("testdata", "edge-cases")}, &stdout, &stderr)
+	if exitCode != 0 {
+		t.Fatalf("expected whole-word matches, got exit %d", exitCode)
+	}
+	wholeWordCount := strings.TrimSpace(stdout.String())
+
+	allCountInt := 0
+	wholeWordCountInt := 0
+	fmt.Sscanf(allCount, "%d", &allCountInt)
+	fmt.Sscanf(wholeWordCount, "%d", &wholeWordCountInt)
+
+	if wholeWordCountInt >= allCountInt {
+		t.Fatalf("whole-word should find fewer matches: all=%d wholeWord=%d", allCountInt, wholeWordCountInt)
+	}
+}
+
+func TestWindowsLineEndings(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	exitCode := run([]string{"needle", filepath.Join("testdata", "edge-cases")}, &stdout, &stderr)
+	if exitCode != 0 {
+		t.Fatalf("expected matches, got exit %d", exitCode)
+	}
+
+	output := stdout.String()
+	if !strings.Contains(output, "windows-endings.txt") {
+		t.Fatalf("expected windows-endings.txt in output:\n%s", output)
+	}
+}
+
+func TestUnixLineEndings(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	exitCode := run([]string{"needle", filepath.Join("testdata", "edge-cases")}, &stdout, &stderr)
+	if exitCode != 0 {
+		t.Fatalf("expected matches, got exit %d", exitCode)
+	}
+
+	output := stdout.String()
+	if !strings.Contains(output, "unix-endings.txt") {
+		t.Fatalf("expected unix-endings.txt in output:\n%s", output)
+	}
+}
+
+// ============================================================================
+// CODE SAMPLE TESTS
+// ============================================================================
+
+func TestSearchInGoCode(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	exitCode := run([]string{"-extensions", ".go", "needle", filepath.Join("testdata", "code-samples")}, &stdout, &stderr)
+	if exitCode != 0 {
+		t.Fatalf("expected matches in Go code, got exit %d", exitCode)
+	}
+
+	output := stdout.String()
+	if !strings.Contains(output, "SearchForNeedle") {
+		t.Fatalf("expected to find function name, got:\n%s", output)
+	}
+}
+
+func TestSearchInPythonCode(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	exitCode := run([]string{"-extensions", ".py", "needle", filepath.Join("testdata", "code-samples")}, &stdout, &stderr)
+	if exitCode != 0 {
+		t.Fatalf("expected matches in Python code, got exit %d", exitCode)
+	}
+
+	output := stdout.String()
+	if !strings.Contains(output, "find_needle") {
+		t.Fatalf("expected to find function name, got:\n%s", output)
+	}
+}
+
+func TestSearchInJavaScriptCode(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	exitCode := run([]string{"-extensions", ".js", "needle", filepath.Join("testdata", "code-samples")}, &stdout, &stderr)
+	if exitCode != 0 {
+		t.Fatalf("expected matches in JavaScript code, got exit %d", exitCode)
+	}
+
+	output := stdout.String()
+	// Should find needle in JS comments and strings
+	if !strings.Contains(output, "sample.js") {
+		t.Fatalf("expected sample.js in output, got:\n%s", output)
+	}
+}
+
+func TestSearchInJSON(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	exitCode := run([]string{"-extensions", ".json", "needle", filepath.Join("testdata", "code-samples")}, &stdout, &stderr)
+	if exitCode != 0 {
+		t.Fatalf("expected matches in JSON, got exit %d", exitCode)
+	}
+}
+
+func TestSearchInTOML(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	exitCode := run([]string{"-extensions", ".toml", "needle", filepath.Join("testdata", "code-samples")}, &stdout, &stderr)
+	if exitCode != 0 {
+		t.Fatalf("expected matches in TOML, got exit %d", exitCode)
+	}
+}
+
+func TestMultipleExtensions(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	exitCode := run([]string{"-extensions", ".go,.py,.js", "-count", "needle", filepath.Join("testdata", "code-samples")}, &stdout, &stderr)
+	if exitCode != 0 {
+		t.Fatalf("expected matches with multiple extensions, got exit %d", exitCode)
+	}
+
+	count := strings.TrimSpace(stdout.String())
+	countInt := 0
+	fmt.Sscanf(count, "%d", &countInt)
+	if countInt < 10 {
+		t.Fatalf("expected at least 10 matches across Go/Py/JS files, got %s", count)
+	}
+}
+
+// ============================================================================
+// REGEX PATTERN TESTS
+// ============================================================================
+
+func TestRegexFunctionPattern(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	// Find Go function declarations
+	exitCode := run([]string{"-regex", "-extensions", ".go", `func\s+\w+`, filepath.Join("testdata", "code-samples")}, &stdout, &stderr)
+	if exitCode != 0 {
+		t.Fatalf("expected regex matches for functions, got exit %d, stderr: %s", exitCode, stderr.String())
+	}
+
+	output := stdout.String()
+	if !strings.Contains(output, "func SearchForNeedle") && !strings.Contains(output, "func main") {
+		t.Fatalf("expected to match function declarations, got:\n%s", output)
+	}
+}
+
+func TestRegexClassPattern(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	// Find Python class declarations
+	exitCode := run([]string{"-regex", "-extensions", ".py", `class\s+\w+`, filepath.Join("testdata", "code-samples")}, &stdout, &stderr)
+	if exitCode != 0 {
+		t.Fatalf("expected regex matches for class, got exit %d, stderr: %s", exitCode, stderr.String())
+	}
+
+	output := stdout.String()
+	if !strings.Contains(output, "class NeedleFinder") {
+		t.Fatalf("expected to match class declaration, got:\n%s", output)
+	}
+}
+
+func TestRegexCommentPattern(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	// Find single-line comments in Go files
+	exitCode := run([]string{"-regex", "-i", "-extensions", ".go", `//.*needle`, filepath.Join("testdata", "code-samples")}, &stdout, &stderr)
+	if exitCode != 0 {
+		t.Fatalf("expected regex matches for comments, got exit %d, stderr: %s", exitCode, stderr.String())
+	}
+}
+
+func TestInvalidRegexReturnsError(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	// Invalid regex should return exit code 2
+	exitCode := run([]string{"-regex", "[invalid(regex", filepath.Join("testdata", "small")}, &stdout, &stderr)
+	if exitCode != 2 {
+		t.Fatalf("expected exit code 2 for invalid regex, got %d", exitCode)
+	}
+}
+
+// ============================================================================
+// COMBINED FLAG TESTS
+// ============================================================================
+
+func TestCombinedFlags(t *testing.T) {
+	testCases := []struct {
+		name     string
+		flags    []string
+		wantExit int
+	}{
+		{"case-insensitive-whole-word", []string{"-i", "-w", "NEEDLE", filepath.Join("testdata", "small")}, 0},
+		{"regex-case-insensitive", []string{"-regex", "-i", "NEEDLE.*first", filepath.Join("testdata", "small")}, 0},
+		{"count-quiet-conflict", []string{"-count", "-quiet", "needle", filepath.Join("testdata", "small")}, 0},
+		{"json-color", []string{"-format", "json", "-color", "needle", filepath.Join("testdata", "small")}, 0},
+		{"extensions-exclude-dir", []string{"-extensions", ".txt", "-exclude-dir", "nested", "needle", filepath.Join("testdata")}, 0},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			var stdout bytes.Buffer
+			var stderr bytes.Buffer
+
+			exitCode := run(tc.flags, &stdout, &stderr)
+			if exitCode != tc.wantExit {
+				t.Fatalf("expected exit %d, got %d, stderr: %s", tc.wantExit, exitCode, stderr.String())
+			}
+		})
+	}
+}
+
+// ============================================================================
+// ERROR HANDLING TESTS
+// ============================================================================
+
+func TestNonExistentPath(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	exitCode := run([]string{"needle", filepath.Join("testdata", "nonexistent-directory-12345")}, &stdout, &stderr)
+	if exitCode != 2 {
+		t.Fatalf("expected exit code 2 for nonexistent path, got %d", exitCode)
+	}
+}
+
+func TestEmptyPattern(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	exitCode := run([]string{"", filepath.Join("testdata", "small")}, &stdout, &stderr)
+	if exitCode != 2 {
+		t.Fatalf("expected exit code 2 for empty pattern, got %d", exitCode)
+	}
+}
+
+func TestNoArguments(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	exitCode := run([]string{}, &stdout, &stderr)
+	if exitCode != 2 {
+		t.Fatalf("expected exit code 2 for no arguments, got %d", exitCode)
+	}
+}
+
+func TestInvalidMaxSize(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	exitCode := run([]string{"-max-size", "invalid", "needle", filepath.Join("testdata", "small")}, &stdout, &stderr)
+	if exitCode != 2 {
+		t.Fatalf("expected exit code 2 for invalid max-size, got %d", exitCode)
+	}
+}
+
+func TestInvalidMaxDepth(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	exitCode := run([]string{"-max-depth", "abc", "needle", filepath.Join("testdata", "small")}, &stdout, &stderr)
+	if exitCode != 2 {
+		t.Fatalf("expected exit code 2 for invalid max-depth, got %d", exitCode)
+	}
+}
+
+// ============================================================================
+// PERFORMANCE AND STRESS TESTS
+// ============================================================================
+
+func TestManySmallFiles(t *testing.T) {
+	root := t.TempDir()
+	
+	// Create 100 small files
+	for i := 0; i < 100; i++ {
+		content := fmt.Sprintf("file %d content\n", i)
+		if i%10 == 0 {
+			content += "needle match here\n"
+		}
+		filePath := filepath.Join(root, fmt.Sprintf("file_%03d.txt", i))
+		if err := os.WriteFile(filePath, []byte(content), 0o644); err != nil {
+			t.Fatalf("failed to create file: %v", err)
+		}
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	exitCode := run([]string{"-count", "needle", root}, &stdout, &stderr)
+	if exitCode != 0 {
+		t.Fatalf("expected matches, got exit %d", exitCode)
+	}
+
+	count := strings.TrimSpace(stdout.String())
+	if count != "10" {
+		t.Fatalf("expected 10 matches, got %s", count)
+	}
+}
+
+func TestDeepDirectoryStructure(t *testing.T) {
+	root := t.TempDir()
+	
+	// Create 10 levels deep
+	current := root
+	for i := 0; i < 10; i++ {
+		current = filepath.Join(current, fmt.Sprintf("level%d", i))
+		if err := os.MkdirAll(current, 0o755); err != nil {
+			t.Fatalf("failed to create directory: %v", err)
+		}
+		content := fmt.Sprintf("depth %d needle here\n", i)
+		filePath := filepath.Join(current, "file.txt")
+		if err := os.WriteFile(filePath, []byte(content), 0o644); err != nil {
+			t.Fatalf("failed to create file: %v", err)
+		}
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	// Without depth limit
+	exitCode := run([]string{"-count", "needle", root}, &stdout, &stderr)
+	if exitCode != 0 {
+		t.Fatalf("expected matches, got exit %d", exitCode)
+	}
+	allCount := strings.TrimSpace(stdout.String())
+	if allCount != "10" {
+		t.Fatalf("expected 10 matches, got %s", allCount)
+	}
+
+	// With depth limit
+	stdout.Reset()
+	stderr.Reset()
+	exitCode = run([]string{"-count", "-max-depth", "3", "needle", root}, &stdout, &stderr)
+	if exitCode != 0 {
+		t.Fatalf("expected matches with depth limit, got exit %d", exitCode)
+	}
+	limitedCount := strings.TrimSpace(stdout.String())
+	limitedCountInt := 0
+	fmt.Sscanf(limitedCount, "%d", &limitedCountInt)
+	if limitedCountInt >= 10 {
+		t.Fatalf("depth limit should reduce matches: got %s", limitedCount)
+	}
+}
+
+func TestLargeFileHandling(t *testing.T) {
+	root := t.TempDir()
+	
+	// Create a 5MB file
+	var builder strings.Builder
+	for i := 0; i < 100000; i++ {
+		builder.WriteString("this is a regular line without matches\n")
+		if i == 50000 {
+			builder.WriteString("needle appears in the middle of large file\n")
+		}
+	}
+	
+	largePath := filepath.Join(root, "large.txt")
+	if err := os.WriteFile(largePath, []byte(builder.String()), 0o644); err != nil {
+		t.Fatalf("failed to create large file: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	exitCode := run([]string{"needle", root}, &stdout, &stderr)
+	if exitCode != 0 {
+		t.Fatalf("expected match in large file, got exit %d", exitCode)
+	}
+
+	if !strings.Contains(stdout.String(), "needle appears in the middle") {
+		t.Fatalf("expected match output, got:\n%s", stdout.String())
+	}
+}
+
+// ============================================================================
+// OUTPUT FORMAT TESTS  
+// ============================================================================
+
+func TestJSONOutputStructure(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	exitCode := run([]string{"-format", "json", "needle", filepath.Join("testdata", "small")}, &stdout, &stderr)
+	if exitCode != 0 {
+		t.Fatalf("expected match, got exit %d, stderr: %s", exitCode, stderr.String())
+	}
+
+	var result struct {
+		Path string `json:"path"`
+		Line int    `json:"line"`
+		Text string `json:"text"`
+	}
+
+	lines := strings.Split(strings.TrimSpace(stdout.String()), "\n")
+	if len(lines) == 0 {
+		t.Fatal("expected JSON output")
+	}
+
+	if err := json.Unmarshal([]byte(lines[0]), &result); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+
+	if result.Path == "" {
+		t.Fatal("JSON missing path field")
+	}
+	if result.Line == 0 {
+		t.Fatal("JSON missing line field")
+	}
+	if result.Text == "" {
+		t.Fatal("JSON missing text field")
+	}
+}
+
+func TestPlainOutputFormat(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	exitCode := run([]string{"needle", filepath.Join("testdata", "small")}, &stdout, &stderr)
+	if exitCode != 0 {
+		t.Fatalf("expected match, got exit %d, stderr: %s", exitCode, stderr.String())
+	}
+
+	output := stdout.String()
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	if len(lines) == 0 {
+		t.Fatal("expected output lines")
+	}
+	
+	// Plain format: path:line: text
+	firstLine := lines[0]
+	parts := strings.SplitN(firstLine, ":", 3)
+	if len(parts) != 3 {
+		t.Fatalf("expected plain format 'path:line: text', got: %s", firstLine)
+	}
+
+	// Line number should be numeric
+	lineNum := 0
+	_, err := fmt.Sscanf(parts[1], "%d", &lineNum)
+	if err != nil || lineNum == 0 {
+		t.Fatalf("expected numeric line number, got: %s", parts[1])
+	}
 }

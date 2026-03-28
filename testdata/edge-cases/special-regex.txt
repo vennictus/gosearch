@@ -1,0 +1,12 @@
+needle.with.dots
+needle*with*asterisks
+needle+with+plus
+needle?with?questions
+needle[with]brackets
+needle(with)parens
+needle{with}braces
+needle^with^carets
+needle$with$dollars
+needle|with|pipes
+needle\with\backslash
+Regular needle here too

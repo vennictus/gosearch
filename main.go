@@ -1,4 +1,7 @@
 // Package main is the entry point for gosearch CLI.
+// gosearch is a high-throughput, concurrent code search tool built for
+// real-world repositories. It features a 4-stage pipeline architecture
+// with configurable worker pools, .gitignore awareness, and streaming output.
 package main
 
 import (
@@ -13,9 +16,9 @@ import (
 	"sync"
 	"time"
 
-	"gosearch/internal/config"
-	"gosearch/internal/output"
-	"gosearch/internal/search"
+	"github.com/vennictus/gosearch/internal/config"
+	"github.com/vennictus/gosearch/internal/output"
+	"github.com/vennictus/gosearch/internal/search"
 )
 
 const (

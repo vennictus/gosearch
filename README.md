@@ -1,252 +1,157 @@
 # gosearch
 
-```text
-  ____       ____                      _     
- / ___| ___ / ___|  ___  __ _ _ __ ___| |__  
-| |  _ / _ \\___ \ / _ \/ _` | '__/ __| '_ \ 
-| |_| | (_) |___) |  __/ (_| | | | (__| | | |
- \____|\___/|____/ \___|\__,_|_|  \___|_| |_|
-```
+[![CI](https://github.com/vennictus/gosearch/actions/workflows/ci.yml/badge.svg)](https://github.com/vennictus/gosearch/actions/workflows/ci.yml)
+[![Go Report Card](https://goreportcard.com/badge/github.com/vennictus/gosearch)](https://goreportcard.com/report/github.com/vennictus/gosearch)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-`gosearch` is a high-throughput, concurrency-first CLI search engine for real repositories.
+A fast, concurrent code search tool written in Go.
 
-If standard grep-style workflows feel too bare and heavy codebases need more control, this is the upgrade path: recursive traversal, ignore-rule awareness, structured output, deterministic exit semantics, and deep observability when you need to tune performance.
+## What It Does
 
-## What this is 
+Search through files recursively with support for:
+- **Regex and substring matching**
+- **Ignore rules** (`.gitignore` + `.gosearchignore`)
+- **Concurrent processing** with configurable worker pools
+- **JSON output** for tooling integration
+- **Symlink handling** with loop detection
 
-- Recursive search with streaming output.
-- Concurrency pipeline split into traversal, IO, CPU matching, and single-owner printing.
-- Substring and regex strategies with startup regex precompilation.
-- Ignore-aware traversal via `.gitignore` and `.gosearchignore` (with inheritance and negation).
-- Symlink controls with loop prevention.
-- Production-grade CLI surface: filters, output modes, metrics, tracing, profiling, config defaults.
-- Full engineering package: tests, race checks, fuzzing, benchmarks, completions, man page, release scripts.
-
-## Fast Start
+## Install
 
 ```bash
+go install github.com/vennictus/gosearch@latest
+```
+
+Or build from source:
+
+```bash
+git clone https://github.com/vennictus/gosearch
+cd gosearch
 go build -o gosearch .
-./gosearch "needle" ./testdata/small
 ```
 
-Command contract:
-
-```text
-gosearch [flags] <pattern> <path>
-```
-
-## Practical Commands
+## Quick Start
 
 ```bash
-# case-insensitive search
-./gosearch -i "todo" .
+# Basic search
+gosearch "TODO" ./src
 
-# whole-word exact token matching
-./gosearch -w "Config" .
+# Case-insensitive
+gosearch -i "error" .
 
-# regex mode
-./gosearch -regex "func\\s+main" .
+# Regex mode
+gosearch -regex "func\s+\w+" .
 
-# JSON output for tooling/pipelines
-./gosearch -format json "error" .
+# JSON output
+gosearch -format json "config" .
 
-# count-only mode (fast reporting)
-./gosearch -count "needle" ./testdata
+# Filter by extension
+gosearch -extensions .go,.md "test" .
 
-# quiet mode for scripting via exit code only
-./gosearch -quiet "needle" ./testdata
-
-# restrict by extension and max file size
-./gosearch -extensions .go,.md -max-size 2MB "worker" .
-
-# follow symlinks up to bounded depth
-./gosearch -follow-symlinks -max-depth 6 "TODO" .
+# Count matches only
+gosearch -count "needle" ./project
 ```
 
-## Full Flag Reference
+## Common Flags
 
-### Search behavior
+| Flag | Description |
+|------|-------------|
+| `-i` | Case-insensitive search |
+| `-w` | Whole-word matching |
+| `-regex` | Treat pattern as regex |
+| `-n` | Show line numbers (default: true) |
+| `-extensions .go,.ts` | Filter by file extension |
+| `-exclude-dir vendor` | Skip directories |
+| `-max-size 10MB` | Skip large files |
+| `-format json` | JSON output |
+| `-count` | Print match count only |
+| `-quiet` | No output, exit code only |
+| `-color` | Syntax highlighting |
 
-- `-i` case-insensitive search
-- `-n` show line numbers (default `true`, set `-n=false` to disable)
-- `-w` whole-word matching
-- `-regex` treat pattern as regex
+## Exit Codes
 
-### Input scope and filtering
-
-- `-extensions .go,.txt` include only listed extensions
-- `-exclude-dir vendor,node_modules` skip named directories
-- `-max-size 10MB` skip files larger than threshold (bytes/KB/MB/GB)
-- `-max-depth N` cap traversal depth (`-1` = unlimited)
-- `-follow-symlinks` include symlinked files/dirs with loop prevention
-
-### Output modes
-
-- `-format plain|json` choose output format
-- `-count` print total match count only
-- `-quiet` suppress output; rely on exit code
-- `-color` enable ANSI highlight in plain mode
-- `-abs` print absolute paths
-
-### Worker and throughput controls
-
-- `-workers N` base worker count
-- `-io-workers N` IO workers (`0` = auto)
-- `-cpu-workers N` CPU workers (`0` = auto)
-- `-dynamic-workers` enable dynamic CPU scaling
-- `-max-workers N` cap dynamic CPU workers (`0` = auto)
-- `-backpressure N` channel buffer size (`0` = auto)
-
-### Diagnostics and profiling
-
-- `-metrics` print worker lifecycle and throughput metrics
-- `-debug` debug logging
-- `-trace` verbose trace logging
-- `-monitor-goroutines` periodic goroutine count logging
-- `-monitor-interval-ms N` monitor interval (minimum `10`, default `250`)
-- `-cpuprofile file.out` write CPU profile
-- `-memprofile file.out` write heap profile on exit
-
-### Config and CLI metadata
-
-- `-config path/to/.gosearchrc` load JSON defaults
-- `-completion bash|zsh|fish` print completion script
-- `-version` print build version
-
-## Output Contract
-
-Plain output (`-format plain`, default):
-
-```text
-path/to/file:line_number: line_text
-```
-
-JSON output (`-format json`):
-
-```json
-{"path":"...","line":12,"text":"..."}
-```
-
-Exit codes:
-
-- `0` one or more matches found
-- `1` no matches found
-- `2` invalid usage or fatal setup/runtime error
-
-## Ignore and Symlink Semantics
-
-- Traversal parses `.gitignore` and `.gosearchignore`.
-- Ignore rules are inherited by child directories.
-- Negation patterns (`!pattern`) can re-include paths at deeper levels.
-- Default ignored directories include `.git`, `vendor`, and `node_modules`.
-- Ignore pruning happens before work enqueue, so ignored paths never hit workers.
-- Symlinks are skipped unless `-follow-symlinks` is enabled.
-- Directory symlink loops are blocked using resolved-path tracking.
+| Code | Meaning |
+|------|---------|
+| `0` | Matches found |
+| `1` | No matches |
+| `2` | Error (bad args, etc.) |
 
 ## Config File
 
-Default path is `.gosearchrc`.
-
-Example:
+Create `.gosearchrc` in your project:
 
 ```json
 {
   "ignore_case": true,
-  "workers": 8,
   "format": "json",
-  "dynamic_workers": true
+  "extensions": [".go", ".ts", ".js"]
 }
 ```
 
-Precedence rule: CLI flags always override config values.
+CLI flags override config values.
 
-## Architecture Snapshot
-
-```text
-walk filesystem
-  -> path jobs
-    -> IO workers (read + binary detection)
-      -> line jobs
-        -> CPU workers (match strategy)
-          -> result channel
-            -> single printer goroutine
-```
-
-Design priorities:
-
-- no output interleaving
-- bounded concurrency
-- deterministic shutdown
-- cancellation propagation via context
-
-## Testing and Validation
-
-Windows one-command validation:
-
-```powershell
-./scripts/test.ps1
-```
-
-Optional fuzz mode:
-
-```powershell
-./scripts/test.ps1 -IncludeFuzz
-```
-
-Cross-platform manual commands:
+## Performance Tuning
 
 ```bash
-go test -count=1 ./...
-go test -count=1 -race ./...
+# Custom worker counts
+gosearch -io-workers 8 -cpu-workers 16 "pattern" .
+
+# Dynamic scaling
+gosearch -dynamic-workers -max-workers 32 "pattern" .
+
+# View metrics
+gosearch -metrics "pattern" .
+```
+
+## Shell Completions
+
+```bash
+# Bash
+gosearch -completion bash > ~/.local/share/bash-completion/completions/gosearch
+
+# Zsh
+gosearch -completion zsh > ~/.zfunc/_gosearch
+
+# Fish
+gosearch -completion fish > ~/.config/fish/completions/gosearch.fish
+```
+
+## Documentation
+
+- **[GUIDE.md](GUIDE.md)** — Deep dive for beginners (how everything works)
+- **[PRODUCT_SPEC.md](PRODUCT_SPEC.md)** — Full specification and design docs
+
+## Development
+
+```bash
+# Run tests
+go test ./...
+
+# Run with race detector
+go test -race ./...
+
+# Run benchmarks
 go test -bench=. -benchmem ./...
-go test -fuzz=Fuzz -run=^$ ./...
+
+# Build release binaries
+make release VERSION=v1.0.0
 ```
 
-## Release Workflow
+## Project Structure
 
-```bash
-make cross VERSION=vX.Y.Z
-make release VERSION=vX.Y.Z
+```
+gosearch/
+├── main.go                 # Entry point
+├── internal/
+│   ├── config/             # CLI parsing, config loading
+│   ├── search/             # Matching, workers, traversal
+│   ├── ignore/             # .gitignore handling
+│   └── output/             # Result printing
+├── completions/            # Shell completions
+├── man/                    # Man page
+├── scripts/                # Release scripts
+└── testdata/               # Test fixtures
 ```
 
-Version injection:
+## License
 
-```bash
-go build -ldflags "-X main.version=vX.Y.Z" -o gosearch .
-```
-
-Release helpers:
-
-- `scripts/release.sh`
-- `scripts/release.ps1`
-
-## Documentation Map
-
-- `DESIGN.md`
-- `CHANGELOG.md`
-- `docs/architecture.md`
-- `docs/concurrency.md`
-- `docs/performance-report.md`
-- `docs/design-tradeoffs.md`
-- `docs/why-not-x.md`
-
-## Completions and Man Page
-
-- Man page: `man/gosearch.1`
-- Completion assets:
-  - `completions/bash/gosearch.bash`
-  - `completions/zsh/_gosearch`
-  - `completions/fish/gosearch.fish`
-
-Generate from CLI:
-
-```bash
-gosearch -completion bash
-gosearch -completion zsh
-gosearch -completion fish
-```
-
-## Known Limitations
-
-- Output order is intentionally non-deterministic under concurrency.
-- SIGINT behavior in tests differs on Windows compared to Unix-like environments.
+MIT

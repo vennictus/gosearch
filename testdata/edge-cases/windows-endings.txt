@@ -1,0 +1,3 @@
+Line ending with CRLF needle
+Another line needle
+Third needle line

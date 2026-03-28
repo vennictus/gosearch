@@ -1,4 +1,6 @@
 // Package config handles CLI configuration parsing and loading.
+// It supports both command-line flags and JSON configuration files (.gosearchrc),
+// with CLI flags taking precedence over file-based defaults.
 package config
 
 import (

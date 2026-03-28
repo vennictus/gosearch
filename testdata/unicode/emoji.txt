@@ -1,0 +1,9 @@
+Search for needle in emoji land 🔍
+This line has 🎉 celebration but no match
+needle appears with 日本語 Japanese text
+中文文字 Chinese characters with needle here
+Привет мир needle with Cyrillic
+العربية needle with Arabic text
+needle 🚀 rocket launch
+Multiple 🔥🔥🔥 emojis no needle
+Last line needle ✨

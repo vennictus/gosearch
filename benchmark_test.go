@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"gosearch/internal/search"
+	"github.com/vennictus/gosearch/internal/search"
 )
 
 func BenchmarkScannerVsReader(b *testing.B) {

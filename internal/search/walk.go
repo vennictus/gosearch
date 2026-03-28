@@ -10,8 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"gosearch/internal/config"
-	"gosearch/internal/ignore"
+	"github.com/vennictus/gosearch/internal/config"
+	"github.com/vennictus/gosearch/internal/ignore"
 )
 
 // WalkFiles walks the filesystem and sends file paths to the jobs channel.
