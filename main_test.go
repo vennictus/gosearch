@@ -928,7 +928,7 @@ func TestCaseVariations(t *testing.T) {
 
 			count := strings.TrimSpace(stdout.String())
 			countInt := 0
-			fmt.Sscanf(count, "%d", &countInt)
+			_, _ = fmt.Sscanf(count, "%d", &countInt)
 			if countInt < tc.minExpected {
 				t.Fatalf("expected at least %d matches, got %d", tc.minExpected, countInt)
 			}
@@ -958,8 +958,8 @@ func TestWholeWordBoundaries(t *testing.T) {
 
 	allCountInt := 0
 	wholeWordCountInt := 0
-	fmt.Sscanf(allCount, "%d", &allCountInt)
-	fmt.Sscanf(wholeWordCount, "%d", &wholeWordCountInt)
+	_, _ = fmt.Sscanf(allCount, "%d", &allCountInt)
+	_, _ = fmt.Sscanf(wholeWordCount, "%d", &wholeWordCountInt)
 
 	if wholeWordCountInt >= allCountInt {
 		t.Fatalf("whole-word should find fewer matches: all=%d wholeWord=%d", allCountInt, wholeWordCountInt)
@@ -1077,7 +1077,7 @@ func TestMultipleExtensions(t *testing.T) {
 
 	count := strings.TrimSpace(stdout.String())
 	countInt := 0
-	fmt.Sscanf(count, "%d", &countInt)
+	_, _ = fmt.Sscanf(count, "%d", &countInt)
 	if countInt < 10 {
 		t.Fatalf("expected at least 10 matches across Go/Py/JS files, got %s", count)
 	}
@@ -1297,7 +1297,7 @@ func TestDeepDirectoryStructure(t *testing.T) {
 	}
 	limitedCount := strings.TrimSpace(stdout.String())
 	limitedCountInt := 0
-	fmt.Sscanf(limitedCount, "%d", &limitedCountInt)
+	_, _ = fmt.Sscanf(limitedCount, "%d", &limitedCountInt)
 	if limitedCountInt >= 10 {
 		t.Fatalf("depth limit should reduce matches: got %s", limitedCount)
 	}
